@@ -4,11 +4,12 @@ import { useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { X, Keyboard } from "lucide-react";
 
-const SHORTCUTS = [
+export const SHORTCUTS = [
   { key: "N", description: "North up" },
   { key: "R", description: "Reset view" },
   { key: "O", description: "Toggle orbit" },
   { key: "/", description: "Open search" },
+  { key: "⌘K", description: "Open search (anywhere)" },
   { key: "F", description: "First person view" },
   { key: "?", description: "Shortcuts help" },
   { key: "Esc", description: "Close / Deselect" },

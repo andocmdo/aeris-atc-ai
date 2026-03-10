@@ -1,6 +1,6 @@
 "use client";
 
-import maplibregl from "maplibre-gl";
+import maplibregl, { setMaxParallelImageRequests } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import {
   createContext,
@@ -14,7 +14,23 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
-import { DEFAULT_STYLE, type MapStyleSpec } from "@/lib/map-styles";
+import {
+  createTerrainDemSource,
+  DEFAULT_STYLE,
+  DARK_TERRAIN_HILLSHADE_LAYER,
+  DARK_TERRAIN_SKY,
+  DARK_TERRAIN_SPEC,
+  TERRAIN_DEM_SOURCE_ID,
+  TERRAIN_HILLSHADE_LAYER_ID,
+  type MapStyleSpec,
+  type TerrainProfile,
+} from "@/lib/map-styles";
+
+// Increase parallel tile requests for faster DEM + base tile loading.
+// Default is 6; 16 allows terrain tiles to saturate HTTP/2 connections.
+setMaxParallelImageRequests(16);
+
+const GLOBE_MAX_PITCH = 80;
 
 type MapContextValue = {
   map: maplibregl.Map | null;
@@ -34,7 +50,9 @@ type MapProps = {
   children?: ReactNode;
   className?: string;
   mapStyle?: MapStyleSpec;
+  terrainProfile?: TerrainProfile;
   isDark?: boolean;
+  globeMode?: boolean;
   center?: [number, number];
   zoom?: number;
   pitch?: number;
@@ -50,7 +68,9 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
     children,
     className,
     mapStyle = DEFAULT_STYLE.style,
+    terrainProfile = "none",
     isDark = true,
+    globeMode = false,
     center = [0, 20],
     zoom = 2.5,
     pitch = 49,
@@ -66,20 +86,32 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
 
   useImperativeHandle(ref, () => mapInstance as maplibregl.Map, [mapInstance]);
 
+  // Ref that allows style-load callbacks to see the latest value without re-running effects
+  const isDarkRef = useRef(isDark);
+  isDarkRef.current = isDark;
+
+  const globeModeRef = useRef(globeMode);
+  globeModeRef.current = globeMode;
+
+  // ── Map creation ──────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
+
+    const safePitch = Math.min(pitch, GLOBE_MAX_PITCH);
 
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: DEFAULT_STYLE.style as maplibregl.StyleSpecification | string,
       center,
       zoom,
-      pitch,
+      pitch: safePitch,
       bearing,
       minZoom,
       maxZoom,
-      maxPitch: 85,
+      maxPitch: GLOBE_MAX_PITCH,
       attributionControl: false,
+      cancelPendingTileRequestsWhileZooming: true,
+      maxTileCacheZoomLevels: 3, // fewer cached zoom levels = less memory for DEM tiles
       renderWorldCopies: false,
     });
 
@@ -94,39 +126,54 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const isDarkRef = useRef(isDark);
-  isDarkRef.current = isDark;
-
+  // Inject globe projection into every style change when globe mode is on.
+  // In Mercator mode, skip projection injection entirely.
   useEffect(() => {
     if (!mapInstance || !isLoaded) return;
-    mapInstance.setStyle(mapStyle as maplibregl.StyleSpecification | string);
 
-    const onStyleLoad = () => {
-      if (typeof mapStyle === "object" && "terrain" in mapStyle) {
-        const spec = mapStyle as Record<string, unknown>;
-        try {
-          mapInstance.setTerrain(
-            spec.terrain as maplibregl.TerrainSpecification,
-          );
-        } catch {
-          /* terrain source not yet loaded */
-        }
-      } else {
-        try {
-          mapInstance.setTerrain(null);
-        } catch {
-          /* no terrain to remove */
-        }
-      }
+    mapInstance.setStyle(
+      mapStyle as maplibregl.StyleSpecification | string,
+      {
+        transformStyle: (_prev, next) => {
+          const style = next as MutableStyleSpecification;
 
+          if (globeMode) {
+            style.projection = { type: "globe" };
+            if (!style.sky) {
+              style.sky = {
+                "atmosphere-blend": [
+                  "interpolate",
+                  ["linear"],
+                  ["zoom"],
+                  0,
+                  1,
+                  5,
+                  0,
+                ],
+              };
+            }
+          }
+
+          if (terrainProfile === "dark" && !globeMode) {
+            applyDarkTerrainStyle(style);
+            style.sky = DARK_TERRAIN_SKY as Record<string, unknown>;
+          }
+
+          return style;
+        },
+      } as maplibregl.StyleSwapOptions & { transformStyle: unknown },
+    );
+
+    // Set projection imperatively so it takes effect immediately.
+    mapInstance.once("style.load", () => {
+      mapInstance.setProjection({ type: globeMode ? "globe" : "mercator" });
       addAerowayLayers(mapInstance, isDarkRef.current);
-    };
-    mapInstance.once("style.load", onStyleLoad);
+    });
 
     return () => {
-      mapInstance.off("style.load", onStyleLoad);
+      mapInstance.off("style.load", () => {});
     };
-  }, [mapInstance, isLoaded, mapStyle]);
+  }, [mapInstance, isLoaded, mapStyle, terrainProfile, globeMode]);
 
   const ctx = useMemo(
     () => ({ map: mapInstance, isLoaded }),
@@ -146,6 +193,42 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
 });
 
 Map.displayName = "Map";
+
+type MutableStyleSpecification = maplibregl.StyleSpecification & {
+  projection?: maplibregl.ProjectionSpecification;
+  sky?: Record<string, unknown>;
+  sources?: Record<string, unknown>;
+  layers?: maplibregl.LayerSpecification[];
+  terrain?: maplibregl.TerrainSpecification;
+};
+
+function applyDarkTerrainStyle(style: MutableStyleSpecification): void {
+  const sources = (style.sources ??=
+    {}) as maplibregl.StyleSpecification["sources"];
+
+  // Single DEM source shared by both terrain mesh and hillshade layer.
+  // This halves tile downloads vs. having two separate sources.
+  if (!sources[TERRAIN_DEM_SOURCE_ID]) {
+    sources[TERRAIN_DEM_SOURCE_ID] =
+      createTerrainDemSource() as maplibregl.SourceSpecification;
+  }
+
+  style.terrain = DARK_TERRAIN_SPEC as maplibregl.TerrainSpecification;
+
+  const layers = (style.layers ??= []);
+  if (!layers.some((layer) => layer.id === TERRAIN_HILLSHADE_LAYER_ID)) {
+    const firstSymbolIndex = layers.findIndex(
+      (layer) => layer.type === "symbol",
+    );
+    const insertIndex =
+      firstSymbolIndex === -1 ? layers.length : firstSymbolIndex;
+    layers.splice(
+      insertIndex,
+      0,
+      DARK_TERRAIN_HILLSHADE_LAYER as maplibregl.LayerSpecification,
+    );
+  }
+}
 
 function findVectorSource(map: maplibregl.Map): string | null {
   const style = map.getStyle();
