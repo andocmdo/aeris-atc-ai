@@ -50,14 +50,18 @@ export function normalizeBounds(
 export function parseStateRow(
   rawState: (string | number | boolean | null)[],
 ): FlightState | null {
-  if (rawState.length < 17) return null;
+  if (!Array.isArray(rawState) || rawState.length < 18) return null;
 
   const icao24 =
     typeof rawState[0] === "string" ? rawState[0].toLowerCase() : "";
   if (!ICAO24_REGEX.test(icao24)) return null;
 
-  const longitude = isFiniteNumber(rawState[5]) ? rawState[5] : null;
-  const latitude = isFiniteNumber(rawState[6]) ? rawState[6] : null;
+  const rawLng = isFiniteNumber(rawState[5]) ? rawState[5] : null;
+  const rawLat = isFiniteNumber(rawState[6]) ? rawState[6] : null;
+  const longitude =
+    rawLng !== null && rawLng >= -180 && rawLng <= 180 ? rawLng : null;
+  const latitude =
+    rawLat !== null && rawLat >= -90 && rawLat <= 90 ? rawLat : null;
   const baroAltitude = isFiniteNumber(rawState[7]) ? rawState[7] : null;
 
   return {
@@ -103,7 +107,9 @@ export function parseStates(
 
 // ── Callsign Normalization ─────────────────────────────────────────────
 
+const WHITESPACE_RE = /\s+/g;
+
 export function normalizeCallsign(value: string | null): string {
   if (!value) return "";
-  return value.trim().toUpperCase().replace(/\s+/g, "");
+  return value.trim().toUpperCase().replace(WHITESPACE_RE, "");
 }

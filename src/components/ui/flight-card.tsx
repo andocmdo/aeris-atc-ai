@@ -30,6 +30,7 @@ import { aircraftTypeHint } from "@/lib/aircraft";
 import { airlineLogoCandidates } from "@/lib/airline-logos";
 import {
   loadedAirlineLogoUrls,
+  trackAirlineLogoLoaded,
   markAirlineLogoFailed,
   wasAirlineLogoRecentlyFailed,
 } from "@/lib/logo-cache";
@@ -93,7 +94,7 @@ export function FlightCard({
     aircraft: photoAircraft,
     loading: photosLoading,
     error: photosError,
-  } = useAircraftPhotos(flight?.icao24 ?? null);
+  } = useAircraftPhotos(flight?.icao24 ?? null, flight?.registration);
   const heroPhoto = photos[0] ?? null;
 
   return (
@@ -139,7 +140,7 @@ export function FlightCard({
                         }`}
                         unoptimized
                         onLoad={() => {
-                          if (logoUrl) loadedAirlineLogoUrls.add(logoUrl);
+                          if (logoUrl) trackAirlineLogoLoaded(logoUrl);
                           setLogoLoadedByKey((current) => ({
                             ...current,
                             [logoLoadKey]: true,

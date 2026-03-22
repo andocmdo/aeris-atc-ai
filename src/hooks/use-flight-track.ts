@@ -1,66 +1,79 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { fetchTrackByIcao24, type FlightTrack } from "@/lib/opensky";
+import type { FlightTrack } from "@/lib/opensky";
 
 type TrackCacheEntry = {
   fetchedAt: number;
-  nextAllowedAt: number;
   track: FlightTrack | null;
 };
 
-// /tracks is expensive + rate-limited; cache aggressively.
-const DEFAULT_REFRESH_MS = 0;
-const TRACK_CACHE_TTL_MS_EFFECTIVE = 10 * 60_000;
-const NEGATIVE_CACHE_TTL_MS_EFFECTIVE = 60_000;
+const TRACK_CACHE_TTL_MS = 10 * 60_000;
+const NEGATIVE_CACHE_TTL_MS = 60_000;
 const TRACK_CACHE_MAX_ENTRIES = 100;
+const SELECTION_DEBOUNCE_MS = 350;
+const FETCH_TIMEOUT_MS = 15_000;
+const MIN_RETRY_MS = 2_000;
+const MAX_RETRY_MS = 60_000;
+const DEFAULT_RETRY_MS = 5_000;
 
 const trackCache = new Map<string, TrackCacheEntry>();
-
-// Global backoff for /tracks 429s.
-let globalNextAllowedAt = 0;
-let globalBackoffMs = 5 * 60_000;
-const GLOBAL_BACKOFF_MAX_MS = 24 * 60 * 60_000;
-const GLOBAL_BACKOFF_KEY = "aeris:opensky:tracksGlobalNextAllowedAt";
-const GLOBAL_BACKOFF_MS_KEY = "aeris:opensky:tracksGlobalBackoffMs";
-const SELECTION_DEBOUNCE_MS = 350;
-
-function loadGlobalBackoff(): void {
-  if (typeof window === "undefined") return;
-  try {
-    const nextAllowedRaw = sessionStorage.getItem(GLOBAL_BACKOFF_KEY);
-    const nextAllowed = nextAllowedRaw
-      ? Number.parseInt(nextAllowedRaw, 10)
-      : 0;
-    if (Number.isFinite(nextAllowed) && nextAllowed > 0) {
-      globalNextAllowedAt = Math.max(globalNextAllowedAt, nextAllowed);
-    }
-
-    const backoffRaw = sessionStorage.getItem(GLOBAL_BACKOFF_MS_KEY);
-    const backoff = backoffRaw ? Number.parseInt(backoffRaw, 10) : 0;
-    if (Number.isFinite(backoff) && backoff > 0) {
-      globalBackoffMs = Math.min(
-        GLOBAL_BACKOFF_MAX_MS,
-        Math.max(60_000, backoff),
-      );
-    }
-  } catch {
-    // ignore
-  }
-}
-
-function persistGlobalBackoff(): void {
-  if (typeof window === "undefined") return;
-  try {
-    sessionStorage.setItem(GLOBAL_BACKOFF_KEY, String(globalNextAllowedAt));
-    sessionStorage.setItem(GLOBAL_BACKOFF_MS_KEY, String(globalBackoffMs));
-  } catch {
-    // ignore
-  }
-}
+let rateLimitedUntil = 0;
 
 function cacheTtlMs(track: FlightTrack | null): number {
-  return track ? TRACK_CACHE_TTL_MS_EFFECTIVE : NEGATIVE_CACHE_TTL_MS_EFFECTIVE;
+  return track ? TRACK_CACHE_TTL_MS : NEGATIVE_CACHE_TTL_MS;
+}
+
+function parseRetryAfter(res: Response): number {
+  const header = res.headers.get("Retry-After");
+  if (!header) return DEFAULT_RETRY_MS;
+  const sec = Number.parseFloat(header);
+  if (!Number.isFinite(sec) || sec <= 0) return DEFAULT_RETRY_MS;
+  const ms = sec * 1000;
+  return Math.max(MIN_RETRY_MS, Math.min(MAX_RETRY_MS, ms));
+}
+
+async function fetchTrace(
+  hex: string,
+  signal: AbortSignal,
+): Promise<{
+  track: FlightTrack | null;
+  rateLimited: boolean;
+  retryAfterMs: number;
+}> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  const onAbort = () => controller.abort();
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) {
+    onAbort();
+  }
+
+  try {
+    const res = await fetch(
+      `/api/flights/trace?hex=${encodeURIComponent(hex)}`,
+      { signal: controller.signal, cache: "no-store" },
+    );
+
+    if (res.status === 429) {
+      return {
+        track: null,
+        rateLimited: true,
+        retryAfterMs: parseRetryAfter(res),
+      };
+    }
+
+    if (!res.ok) {
+      return { track: null, rateLimited: false, retryAfterMs: 0 };
+    }
+
+    const data = (await res.json()) as { track: FlightTrack | null };
+    return { track: data.track ?? null, rateLimited: false, retryAfterMs: 0 };
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 export function useFlightTrack(
@@ -69,20 +82,24 @@ export function useFlightTrack(
     refreshMs?: number;
     enabled?: boolean;
   },
-): { track: FlightTrack | null; loading: boolean; fetchedAtMs: number } {
-  const refreshMs = options?.refreshMs ?? DEFAULT_REFRESH_MS;
+): {
+  track: FlightTrack | null;
+  loading: boolean;
+  fetchedAtMs: number;
+  rateLimited: boolean;
+} {
+  const refreshMs = options?.refreshMs ?? 0;
   const enabled = options?.enabled ?? true;
 
   const [track, setTrack] = useState<FlightTrack | null>(null);
   const [loading, setLoading] = useState(false);
   const [fetchedAtMs, setFetchedAtMs] = useState(0);
+  const [rateLimited, setRateLimited] = useState(false);
 
   const requestIdRef = useRef(0);
   const activeKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    loadGlobalBackoff();
-
     if (!icao24) {
       setTrack(null);
       setLoading(false);
@@ -98,10 +115,9 @@ export function useFlightTrack(
     const cached = trackCache.get(key);
     const hasCachedTrack = cached?.track != null;
 
-    // Stale-while-revalidate: keep cached track visible.
-    if (hasCachedTrack) {
-      setTrack(cached!.track);
-      setFetchedAtMs(cached!.fetchedAt);
+    if (cached && hasCachedTrack) {
+      setTrack(cached.track);
+      setFetchedAtMs(cached.fetchedAt);
     } else if (isKeyChange) {
       setTrack(null);
       setFetchedAtMs(0);
@@ -114,26 +130,20 @@ export function useFlightTrack(
 
     let alive = true;
     const controller = new AbortController();
+    let retryTimer: number | null = null;
 
     async function load() {
       const now = Date.now();
 
-      // Sweep stale entries to bound memory growth over time
       for (const [k, entry] of trackCache) {
         if (now - entry.fetchedAt > cacheTtlMs(entry.track)) {
           trackCache.delete(k);
         }
       }
 
-      if (now < globalNextAllowedAt) {
-        return;
-      }
+      if (now < rateLimitedUntil) return;
 
       const existing = trackCache.get(key);
-      if (existing && now < existing.nextAllowedAt) {
-        return;
-      }
-
       if (existing && now - existing.fetchedAt <= cacheTtlMs(existing.track)) {
         return;
       }
@@ -141,63 +151,46 @@ export function useFlightTrack(
       const requestId = ++requestIdRef.current;
       setLoading(true);
       try {
-        const result = await fetchTrackByIcao24(key, 0, controller.signal);
+        const result = await fetchTrace(key, controller.signal);
         if (!alive || requestId !== requestIdRef.current) return;
 
         const fetchedAt = Date.now();
-        const retryAfterSeconds =
-          typeof result.retryAfterSeconds === "number" &&
-          Number.isFinite(result.retryAfterSeconds)
-            ? result.retryAfterSeconds
-            : null;
-
-        const rateLimitedBackoffMs =
-          retryAfterSeconds && retryAfterSeconds > 0
-            ? Math.max(1, retryAfterSeconds) * 1000
-            : globalBackoffMs;
-
-        const nextAllowedAt = result.rateLimited
-          ? fetchedAt + rateLimitedBackoffMs
-          : fetchedAt;
 
         if (result.rateLimited) {
-          globalNextAllowedAt = Math.max(globalNextAllowedAt, nextAllowedAt);
-          globalBackoffMs = Math.min(
-            GLOBAL_BACKOFF_MAX_MS,
-            Math.max(60_000, Math.floor(globalBackoffMs * 1.6)),
-          );
-          persistGlobalBackoff();
+          rateLimitedUntil = fetchedAt + result.retryAfterMs;
+          setRateLimited(true);
+          // Schedule a one-shot retry after the cooldown so we recover
+          // automatically even without a refreshMs interval.
+          retryTimer = window.setTimeout(() => {
+            if (!alive) return;
+            setRateLimited(false);
+            void load();
+          }, result.retryAfterMs);
+          return;
         }
 
-        const existing = trackCache.get(key)?.track ?? null;
-        const nextTrack = result.track ?? existing;
+        setRateLimited(false);
 
-        trackCache.set(key, {
-          fetchedAt,
-          nextAllowedAt,
-          track: nextTrack,
-        });
+        const nextTrack = result.track;
 
-        // Evict oldest entries when cache exceeds max size (FIFO via Map insertion order)
-        if (trackCache.size > TRACK_CACHE_MAX_ENTRIES) {
+        trackCache.delete(key);
+        trackCache.set(key, { fetchedAt, track: nextTrack });
+
+        while (trackCache.size > TRACK_CACHE_MAX_ENTRIES) {
           const oldestKey = trackCache.keys().next().value as
             | string
             | undefined;
-          if (oldestKey && oldestKey !== key) trackCache.delete(oldestKey);
+          if (!oldestKey) break;
+          trackCache.delete(oldestKey);
         }
 
         setFetchedAtMs(fetchedAt);
-
         setTrack(nextTrack);
       } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") {
-          return;
-        }
+        if (err instanceof Error && err.name === "AbortError") return;
         if (process.env.NODE_ENV !== "production") {
-          console.error("useFlightTrack: failed to fetch track", err);
+          console.error("useFlightTrack: failed to fetch trace", err);
         }
-
-        return;
       } finally {
         if (alive && requestId === requestIdRef.current) {
           setLoading(false);
@@ -213,6 +206,7 @@ export function useFlightTrack(
     let interval: number | null = null;
     if (refreshMs > 0) {
       interval = window.setInterval(() => {
+        if (typeof document !== "undefined" && document.hidden) return;
         void load();
       }, refreshMs);
     }
@@ -221,10 +215,11 @@ export function useFlightTrack(
       alive = false;
       controller.abort();
       window.clearTimeout(loadTimer);
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
       if (interval !== null) window.clearInterval(interval);
       setLoading(false);
     };
   }, [icao24, refreshMs, enabled]);
 
-  return { track, loading, fetchedAtMs };
+  return { track, loading, fetchedAtMs, rateLimited };
 }

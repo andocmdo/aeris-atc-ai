@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
+import { Toaster } from "sonner";
 import "./globals.css";
 
 const inter = Inter({
@@ -14,7 +15,7 @@ const GA_ID = process.env.NEXT_PUBLIC_GA_ID;
 const title = "Aeris — Real-Time 3D Flight Tracking";
 const description =
   "Track live flights in 3D over the world's busiest airspaces. Altitude-aware, beautifully rendered, and completely free.";
-const siteUrl = "https://aeris-flight.vercel.app";
+const siteUrl = "https://aeris.edbn.me";
 
 export const metadata: Metadata = {
   title,
@@ -79,6 +80,17 @@ export default function RootLayout({
       </head>
       <body className={`${inter.variable} font-sans antialiased`}>
         {children}
+        <Toaster
+          position="bottom-center"
+          theme="dark"
+          offset={16}
+          mobileOffset={8}
+          gap={8}
+          toastOptions={{
+            unstyled: true,
+            className: "w-full",
+          }}
+        />
       </body>
     </html>
   );

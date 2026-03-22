@@ -7,9 +7,14 @@
  * thresholds are named constants.
  */
 
-import { snapLngToReference, unwrapLngPath } from "@/lib/geo";
+import {
+  snapLngToReference,
+  unwrapLngPath,
+  greatCircleIntermediate,
+} from "@/lib/geo";
 import {
   catmullRomSpline3D,
+  catmullRomRespline3D,
   filterGroundSegments,
   smoothAltitudeProfile,
   adaptiveDownsample,
@@ -26,7 +31,7 @@ import type { FlightState } from "@/lib/opensky";
 // ---------------------------------------------------------------------------
 
 /** Number of recent live-trail points to append after the historical track. */
-const LIVE_TAIL_POINT_COUNT = 18;
+const LIVE_TAIL_POINT_COUNT = 24;
 
 /** Maximum search depth (from end) when looking for overlap between the
  *  historical track and the live tail.  Increased to account for spline
@@ -82,63 +87,37 @@ const MAX_SPLINED_POINTS = 1800;
  * Spherical linear interpolation between two [lng, lat] points.
  * More accurate than linear interpolation for gaps > ~0.1°.
  */
-function slerpBridge(
-  aLng: number,
-  aLat: number,
-  bLng: number,
-  bLat: number,
-  t: number,
-): [number, number] {
-  // For very small distances, linear interpolation is fine and avoids
-  // numerical issues in the slerp formula.
-  const dLng = bLng - aLng;
-  const dLat = bLat - aLat;
-  if (dLng * dLng + dLat * dLat < 0.01 * 0.01) {
-    return [aLng + dLng * t, aLat + dLat * t];
-  }
-
-  // Convert to radians.
-  const toRad = Math.PI / 180;
-  const la1 = aLat * toRad;
-  const lo1 = aLng * toRad;
-  const la2 = bLat * toRad;
-  const lo2 = bLng * toRad;
-
-  // Great-circle angular distance.
-  const dLat2 = la2 - la1;
-  const dLon2 = lo2 - lo1;
-  const a =
-    Math.sin(dLat2 / 2) ** 2 +
-    Math.cos(la1) * Math.cos(la2) * Math.sin(dLon2 / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-  if (c < 1e-10) {
-    return [aLng + dLng * t, aLat + dLat * t];
-  }
-
-  const sinC = Math.sin(c);
-  const A = Math.sin((1 - t) * c) / sinC;
-  const B = Math.sin(t * c) / sinC;
-
-  const x =
-    A * Math.cos(la1) * Math.cos(lo1) + B * Math.cos(la2) * Math.cos(lo2);
-  const y =
-    A * Math.cos(la1) * Math.sin(lo1) + B * Math.cos(la2) * Math.sin(lo2);
-  const z = A * Math.sin(la1) + B * Math.sin(la2);
-
-  const toDeg = 180 / Math.PI;
-  return [
-    Math.atan2(y, x) * toDeg,
-    Math.atan2(z, Math.sqrt(x * x + y * y)) * toDeg,
-  ];
-}
-
 /**
  * Cubic ease-in-out for altitude interpolation during bridge segments.
  * Produces a more natural transition than linear.
  */
 function cubicEaseInOut(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+// ---------------------------------------------------------------------------
+// Spline cache — avoids recomputing the expensive Steps 1-4 pipeline when
+// the historical track hasn't changed between poll cycles.
+// ---------------------------------------------------------------------------
+
+type SplinedTrack = {
+  key: string;
+  trackPositions: [number, number][];
+  resultPath: [number, number][];
+  resultAltitudes: Array<number | null>;
+  lastWaypointTime: number | undefined;
+};
+
+let splinedTrackCache: SplinedTrack | null = null;
+
+export function clearSplinedTrackCache(): void {
+  splinedTrackCache = null;
+}
+
+function makeTrackCacheKey(track: FlightTrack): string {
+  const first = track.path[0];
+  const last = track.path[track.path.length - 1];
+  return `${track.icao24}|${track.startTime}|${track.endTime}|${track.path.length}|${first?.latitude?.toFixed(4)}|${last?.longitude?.toFixed(4)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,29 +149,86 @@ export function stitchHistoricalTrail(
   flight: FlightState | null,
   fetchedAtMs: number,
 ): StitchResult {
-  // --- Step 1: Filter ground segments ---
-  const airborneWaypoints = filterGroundSegments(track.path);
-  const waypoints = airborneWaypoints ?? track.path;
+  // --- Steps 1-2 & 4: Use cached spline if the historical track is unchanged ---
+  const cacheKey = makeTrackCacheKey(track);
+  let trackPositions: [number, number][];
+  let resultPath: [number, number][];
+  let resultAltitudes: Array<number | null>;
+  let lastWaypointTime: number | undefined;
 
-  // --- Step 2: Extract and unwrap positions ---
-  const rawPositions: [number, number][] = [];
-  const rawAltitudes: Array<number | null> = [];
+  if (splinedTrackCache && splinedTrackCache.key === cacheKey) {
+    // Cache hit — reuse expensive spline result, clone since Steps 5-8 mutate.
+    trackPositions = splinedTrackCache.trackPositions;
+    resultPath = splinedTrackCache.resultPath.map(
+      (p) => [...p] as [number, number],
+    );
+    resultAltitudes = [...splinedTrackCache.resultAltitudes];
+    lastWaypointTime = splinedTrackCache.lastWaypointTime;
+  } else {
+    // Cache miss — run full Steps 1-2 & 4 pipeline.
 
-  for (const p of waypoints) {
-    if (p.longitude == null || p.latitude == null) continue;
-    rawPositions.push([p.longitude, p.latitude]);
-    rawAltitudes.push(p.baroAltitude ?? null);
+    // --- Step 1: Filter ground segments ---
+    const airborneWaypoints = filterGroundSegments(track.path);
+    const waypoints = airborneWaypoints ?? track.path;
+
+    // --- Step 2: Extract and unwrap positions ---
+    const rawPositions: [number, number][] = [];
+    const rawAltitudes: Array<number | null> = [];
+
+    for (const p of waypoints) {
+      if (p.longitude == null || p.latitude == null) continue;
+      rawPositions.push([p.longitude, p.latitude]);
+      rawAltitudes.push(p.baroAltitude ?? null);
+    }
+
+    if (rawPositions.length < 2) {
+      return { path: [], altitudes: [], valid: false };
+    }
+
+    // Unwrap longitudes to avoid dateline artifacts.
+    trackPositions = unwrapLngPath(rawPositions);
+
+    // --- Step 4: Apply Catmull-Rom spline smoothing ---
+    const defaultAlt =
+      flight?.baroAltitude ?? rawAltitudes.find((a) => a != null) ?? 0;
+    const smoothedAlts = smoothAltitudeProfile([...rawAltitudes], defaultAlt);
+
+    const elevatedWaypoints: [number, number, number][] = trackPositions.map(
+      (p, i) => [p[0], p[1], smoothedAlts[i] ?? defaultAlt],
+    );
+
+    const roundedWaypoints = roundSharpCorners3D(elevatedWaypoints, 15);
+    let splinedPath = catmullRomSpline3D(roundedWaypoints, 6, 28);
+    splinedPath = removePathLoops(splinedPath);
+
+    if (splinedPath.length > MAX_SPLINED_POINTS) {
+      splinedPath = adaptiveDownsample(splinedPath, MAX_SPLINED_POINTS);
+    }
+
+    lastWaypointTime = waypoints[waypoints.length - 1]?.time;
+
+    // Store in cache for next poll cycle.
+    const cachedPath = splinedPath.map<[number, number]>((p) => [p[0], p[1]]);
+    const cachedAlts = splinedPath.map<number | null>((p) => p[2]);
+    splinedTrackCache = {
+      key: cacheKey,
+      trackPositions,
+      resultPath: cachedPath,
+      resultAltitudes: cachedAlts,
+      lastWaypointTime,
+    };
+
+    // Clone for mutation in Steps 5-8.
+    resultPath = cachedPath.map((p) => [...p] as [number, number]);
+    resultAltitudes = [...cachedAlts];
   }
-
-  if (rawPositions.length < 2) {
-    return { path: [], altitudes: [], valid: false };
-  }
-
-  // Unwrap longitudes to avoid dateline artifacts.
-  const trackPositions = unwrapLngPath(rawPositions);
-  const trackAltitudes = [...rawAltitudes];
 
   // --- Step 3: Validate track proximity to live position ---
+  const lowAltitude =
+    flight && Number.isFinite(flight.baroAltitude)
+      ? flight.baroAltitude! < LOW_ALTITUDE_THRESHOLD
+      : false;
+
   const livePosAdjusted: [number, number] | null =
     livePosition && trackPositions.length > 0
       ? [
@@ -204,7 +240,6 @@ export function stitchHistoricalTrail(
         ]
       : livePosition;
 
-  const lastWaypointTime = waypoints[waypoints.length - 1]?.time;
   const nowSec = fetchedAtMs > 0 ? Math.floor(fetchedAtMs / 1000) : 0;
   const lastWaypointAgeSec =
     typeof lastWaypointTime === "number" && Number.isFinite(lastWaypointTime)
@@ -232,10 +267,6 @@ export function stitchHistoricalTrail(
       if (d2 < bestDistSq) bestDistSq = d2;
     }
 
-    const lowAltitude =
-      flight && Number.isFinite(flight.baroAltitude)
-        ? flight.baroAltitude! < LOW_ALTITUDE_THRESHOLD
-        : false;
     const maxRejectDeg = lowAltitude
       ? TRACK_REJECT_LOW_ALT_DEG
       : TRACK_REJECT_HIGH_ALT_DEG;
@@ -249,35 +280,8 @@ export function stitchHistoricalTrail(
     }
   }
 
-  // --- Step 4: Apply Catmull-Rom spline smoothing ---
-  // Build elevated points for spline interpolation.
-  const defaultAlt =
-    flight?.baroAltitude ?? rawAltitudes.find((a) => a != null) ?? 0;
-  const smoothedAlts = smoothAltitudeProfile(trackAltitudes, defaultAlt);
-
-  const elevatedWaypoints: [number, number, number][] = trackPositions.map(
-    (p, i) => [p[0], p[1], smoothedAlts[i] ?? defaultAlt],
-  );
-
-  // Pre-process: round sharp corners with Bézier arcs so the spline
-  // doesn't overshoot into self-intersecting loops at sharp turns.
-  const roundedWaypoints = roundSharpCorners3D(elevatedWaypoints, 20);
-
-  // Apply Catmull-Rom spline to produce a smooth path.
-  let splinedPath = catmullRomSpline3D(roundedWaypoints, 6, 28);
-
-  // Safety net: detect and remove any self-intersecting loops the
-  // spline may still have produced (e.g. from outlier waypoints).
-  splinedPath = removePathLoops(splinedPath);
-
-  // Downsample if the splined path is very dense.
-  if (splinedPath.length > MAX_SPLINED_POINTS) {
-    splinedPath = adaptiveDownsample(splinedPath, MAX_SPLINED_POINTS);
-  }
-
-  // Separate back into 2D path + altitudes for compatibility with TrailEntry.
-  const resultPath: [number, number][] = splinedPath.map((p) => [p[0], p[1]]);
-  const resultAltitudes: Array<number | null> = splinedPath.map((p) => p[2]);
+  let junctionCoord: [number, number] | null = null;
+  let tailMerged = false;
 
   // --- Step 5: Merge live tail ---
   if (liveTail && liveTail.path.length >= 2) {
@@ -298,10 +302,6 @@ export function stitchHistoricalTrail(
       refLng = nextLng;
     }
 
-    const lowAltitude =
-      flight && Number.isFinite(flight.baroAltitude)
-        ? flight.baroAltitude! < LOW_ALTITUDE_THRESHOLD
-        : false;
     const maxConnectGapDeg = lowAltitude
       ? MAX_GAP_LOW_ALT_DEG
       : MAX_GAP_HIGH_ALT_DEG;
@@ -370,7 +370,7 @@ export function stitchHistoricalTrail(
 
             for (let s = 1; s < steps; s++) {
               const t = s / steps;
-              const [lng, lat] = slerpBridge(
+              const [lng, lat] = greatCircleIntermediate(
                 last[0],
                 last[1],
                 firstTail[0],
@@ -397,6 +397,16 @@ export function stitchHistoricalTrail(
       }
     }
 
+    // Save the junction coordinate AFTER merge strategy selection but
+    // BEFORE appending tail points.  This captures the correct boundary
+    // regardless of which strategy ran (snap, bridge, small-gap snap).
+    if (tailPath.length > 0 && resultPath.length > 0) {
+      junctionCoord = [
+        resultPath[resultPath.length - 1][0],
+        resultPath[resultPath.length - 1][1],
+      ];
+    }
+
     // Append remaining tail points (skip consecutive duplicates + near-duplicates).
     for (let i = 0; i < tailPath.length; i++) {
       const pos = tailPath[i];
@@ -410,6 +420,7 @@ export function stitchHistoricalTrail(
       }
       resultPath.push(pos);
       resultAltitudes.push(alt);
+      tailMerged = true;
     }
   }
 
@@ -440,16 +451,120 @@ export function stitchHistoricalTrail(
     return { path: [], altitudes: [], valid: false };
   }
 
-  // --- Step 8: Round sharp corners at the historical↔live junction ---
-  // The splined historical path has gentle per-point heading changes (~3-10°)
-  // so roundSharpCorners3D will ONLY add arcs where there's a significant
-  // heading discontinuity — typically at the merge junction or in the tail.
+  // --- Step 8: Smooth the historical↔live junction with localized Catmull-Rom ---
+  // Instead of just rounding sharp corners (roundSharpCorners3D), apply a
+  // full Catmull-Rom re-spline over a window around the junction.  This
+  // produces C1-continuous curvature at the merge point, eliminating the
+  // visible heading kink between the smooth historical spline and the raw
+  // GPS tail.
+  const JUNCTION_WINDOW_BEFORE = 30;
+  const JUNCTION_WINDOW_AFTER = 24;
+  const MIN_JUNCTION_WINDOW = 6;
+
+  let junctionIdx = -1;
+  if (tailMerged && junctionCoord) {
+    // Find the junction coordinate in the post-spike-removal array.
+    // Spike removal may have shifted indices, so search the full array.
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < cleaned.path.length; i++) {
+      const dx = cleaned.path[i][0] - junctionCoord[0];
+      const dy = cleaned.path[i][1] - junctionCoord[1];
+      const d = dx * dx + dy * dy;
+      if (d < bestDist) {
+        bestDist = d;
+        junctionIdx = i;
+      }
+    }
+    // Only accept if the match is within a reasonable distance.
+    // 4× MERGE_SNAP_DEG² accounts for minor shifts from spike removal.
+    if (bestDist > MERGE_SNAP_DEG * MERGE_SNAP_DEG * 4) {
+      junctionIdx = -1;
+    }
+  }
+
+  if (
+    junctionIdx >= 0 &&
+    junctionIdx < cleaned.path.length - 1 &&
+    cleaned.path.length >= MIN_JUNCTION_WINDOW
+  ) {
+    const winStart = Math.max(0, junctionIdx - JUNCTION_WINDOW_BEFORE);
+    const winEnd = Math.min(
+      cleaned.path.length,
+      junctionIdx + JUNCTION_WINDOW_AFTER + 1,
+    );
+
+    if (winEnd - winStart >= MIN_JUNCTION_WINDOW) {
+      // Extract window as 3D points.
+      const windowPoints: [number, number, number][] = [];
+      for (let i = winStart; i < winEnd; i++) {
+        windowPoints.push([
+          cleaned.path[i][0],
+          cleaned.path[i][1],
+          (cleaned.altitudes[i] as number) ?? 0,
+        ]);
+      }
+
+      // Use real neighbouring points as tangent anchors for correct
+      // heading at the window boundaries.
+      const anchorBefore: [number, number, number] =
+        winStart > 0
+          ? [
+              cleaned.path[winStart - 1][0],
+              cleaned.path[winStart - 1][1],
+              (cleaned.altitudes[winStart - 1] as number) ?? 0,
+            ]
+          : windowPoints[0]; // fallback: mirror first point
+      const anchorAfter: [number, number, number] =
+        winEnd < cleaned.path.length
+          ? [
+              cleaned.path[winEnd][0],
+              cleaned.path[winEnd][1],
+              (cleaned.altitudes[winEnd] as number) ?? 0,
+            ]
+          : windowPoints[windowPoints.length - 1]; // fallback: mirror last
+
+      const resplined = catmullRomRespline3D(
+        anchorBefore,
+        windowPoints,
+        anchorAfter,
+        3,
+        6,
+      );
+
+      // Reconstruct the full path: prefix + re-splined junction + suffix.
+      const prefix3D: [number, number, number][] = [];
+      for (let i = 0; i < winStart; i++) {
+        prefix3D.push([
+          cleaned.path[i][0],
+          cleaned.path[i][1],
+          (cleaned.altitudes[i] as number) ?? 0,
+        ]);
+      }
+      const suffix3D: [number, number, number][] = [];
+      for (let i = winEnd; i < cleaned.path.length; i++) {
+        suffix3D.push([
+          cleaned.path[i][0],
+          cleaned.path[i][1],
+          (cleaned.altitudes[i] as number) ?? 0,
+        ]);
+      }
+
+      const final3D = [...prefix3D, ...resplined, ...suffix3D];
+      const finalPath = final3D.map<[number, number]>((p) => [p[0], p[1]]);
+      const finalAlts = final3D.map<number | null>((p) => p[2]);
+
+      return { path: finalPath, altitudes: finalAlts, valid: true };
+    }
+  }
+
+  // Fallback when no junction was found (no live tail, disconnect, etc.):
+  // keep sharp-corner rounding for any remaining heading discontinuities.
   const merged3D: [number, number, number][] = cleaned.path.map((p, i) => [
     p[0],
     p[1],
     (cleaned.altitudes[i] as number) ?? 0,
   ]);
-  const rounded = roundSharpCorners3D(merged3D, 25);
+  const rounded = roundSharpCorners3D(merged3D, 15);
   const finalPath = rounded.map<[number, number]>((p) => [p[0], p[1]]);
   const finalAlts = rounded.map<number | null>((p) => p[2]);
 

@@ -12,6 +12,7 @@ export const SHORTCUTS = [
   { key: "⌘K", description: "Open search (anywhere)" },
   { key: "F", description: "First person view" },
   { key: "?", description: "Shortcuts help" },
+  { key: "A", description: "Toggle ATC panel" },
   { key: "Esc", description: "Close / Deselect" },
 ] as const;
 
@@ -49,7 +50,8 @@ export function KeyboardShortcutsHelp({
 
     function trapFocus(e: KeyboardEvent) {
       if (e.key !== "Tab") return;
-      const elements = dialog!.querySelectorAll<HTMLElement>(
+      if (!dialog) return;
+      const elements = dialog.querySelectorAll<HTMLElement>(
         'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
       );
       if (elements.length === 0) return;

@@ -39,6 +39,10 @@ export function CameraController({
   const orbitFrameRef = useRef<number | null>(null);
   const isInteractingRef = useRef(false);
   const isFollowingRef = useRef(false);
+  const followFlyToActiveRef = useRef(false);
+  const followFlyToTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const isFpvActiveRef = useRef(false);
   const fpvFlightRef = useRef<FlightState | null>(fpvFlight);
   const fpvPosRef = useRef(fpvPositionRef);
@@ -75,6 +79,12 @@ export function CameraController({
     if (followKey === prevFollowRef.current) return;
     prevFollowRef.current = followKey;
 
+    if (followFlyToTimerRef.current) {
+      clearTimeout(followFlyToTimerRef.current);
+      followFlyToTimerRef.current = null;
+    }
+    followFlyToActiveRef.current = false;
+
     if (
       !followFlight ||
       followFlight.longitude == null ||
@@ -85,18 +95,25 @@ export function CameraController({
     }
 
     isFollowingRef.current = true;
+    followFlyToActiveRef.current = true;
     const bearing = Number.isFinite(followFlight.trueTrack)
       ? followFlight.trueTrack!
       : map.getBearing();
 
+    const FOLLOW_FLYTO_MS = 2200;
     map.flyTo({
       center: [followFlight.longitude, followFlight.latitude],
       zoom: FOLLOW_ZOOM,
       pitch: FOLLOW_PITCH,
       bearing,
-      duration: 2200,
+      duration: FOLLOW_FLYTO_MS,
       essential: true,
     });
+
+    followFlyToTimerRef.current = setTimeout(() => {
+      followFlyToActiveRef.current = false;
+      followFlyToTimerRef.current = null;
+    }, FOLLOW_FLYTO_MS);
   }, [map, isLoaded, followFlight]);
 
   // Follow flight continuous update
@@ -105,6 +122,7 @@ export function CameraController({
     if (followFlight.longitude == null || followFlight.latitude == null) return;
 
     if (!isFollowingRef.current) return;
+    if (followFlyToActiveRef.current) return;
 
     map.easeTo({
       center: [followFlight.longitude, followFlight.latitude],
@@ -144,10 +162,18 @@ export function CameraController({
     const onNorthUp = () => {
       if (isFpvActiveRef.current) return;
       if (northUpRafId != null) cancelAnimationFrame(northUpRafId);
-      const startBearing = map.getBearing();
+      if (!map) return;
+      const m = map;
+
+      // Stop any in-progress flyTo/easeTo (e.g. city transition, follow
+      // init) so this RAF setBearing() loop won't fight a parallel
+      // camera animation — which causes visible oscillation.
+      m.stop();
+
+      const startBearing = m.getBearing();
       const delta = ((0 - startBearing + 540) % 360) - 180;
       if (Math.abs(delta) < 0.5) {
-        map.setBearing(0);
+        m.setBearing(0);
         return;
       }
       const duration = 650;
@@ -155,7 +181,7 @@ export function CameraController({
       function animateBearing() {
         const t = Math.min((performance.now() - start) / duration, 1);
         const eased = smoothstep(t);
-        map!.setBearing(startBearing + delta * eased);
+        m.setBearing(startBearing + delta * eased);
         if (t < 1) {
           northUpRafId = requestAnimationFrame(animateBearing);
         } else {

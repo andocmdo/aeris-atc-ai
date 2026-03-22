@@ -90,9 +90,6 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
   const isDarkRef = useRef(isDark);
   isDarkRef.current = isDark;
 
-  const globeModeRef = useRef(globeMode);
-  globeModeRef.current = globeMode;
-
   // ── Map creation ──────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
@@ -111,8 +108,10 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
       maxPitch: GLOBE_MAX_PITCH,
       attributionControl: false,
       cancelPendingTileRequestsWhileZooming: true,
-      maxTileCacheZoomLevels: 3, // fewer cached zoom levels = less memory for DEM tiles
+      maxTileCacheZoomLevels: 2, // fewer cached zoom levels = less GPU memory for tile textures
       renderWorldCopies: false,
+      pixelRatio: 1, // render at 1x regardless of display DPI — significant GPU savings on HiDPI
+      fadeDuration: 0, // disable tile/symbol fade animations — fewer intermediate render frames
     });
 
     map.on("load", () => setIsLoaded(true));
@@ -123,7 +122,7 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
       setIsLoaded(false);
       setMapInstance(null);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Map initializes once; containerRef is stable, style/terrain/globe applied in separate effects
   }, []);
 
   // Inject globe projection into every style change when globe mode is on.
@@ -165,13 +164,15 @@ export const Map = forwardRef<MapRef, MapProps>(function Map(
     );
 
     // Set projection imperatively so it takes effect immediately.
-    mapInstance.once("style.load", () => {
+    const onStyleLoad = () => {
       mapInstance.setProjection({ type: globeMode ? "globe" : "mercator" });
       addAerowayLayers(mapInstance, isDarkRef.current);
-    });
+    };
+
+    mapInstance.once("style.load", onStyleLoad);
 
     return () => {
-      mapInstance.off("style.load", () => {});
+      mapInstance.off("style.load", onStyleLoad);
     };
   }, [mapInstance, isLoaded, mapStyle, terrainProfile, globeMode]);
 

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { fetchFlightByIcao24, type FlightState } from "@/lib/opensky";
+import type { FlightState } from "@/lib/opensky";
+import { fetchFlightByHex } from "@/lib/flight-api";
 import { cityFromFlight } from "@/components/flight-tracker-random";
 import {
   syncFpvToUrl,
@@ -12,7 +13,7 @@ import type { City } from "@/lib/cities";
 // ── Types ──────────────────────────────────────────────────────────────
 
 export interface UseFlightMonitorsOptions {
-  pendingFpvRef: React.RefObject<string | null>;
+  pendingFpvRef: React.MutableRefObject<string | null>;
   fpvIcao24: string | null;
   fpvFlight: FlightState | null;
   followIcao24: string | null;
@@ -70,12 +71,12 @@ export function useFlightMonitors(
     );
     if (match && match.longitude != null && match.latitude != null) {
       if (match.onGround) {
-        (pendingFpvRef as React.MutableRefObject<string | null>).current = null;
+        pendingFpvRef.current = null;
         syncFpvToUrl(null, activeCity);
         setSelectedIcao24(match.icao24);
         return;
       }
-      (pendingFpvRef as React.MutableRefObject<string | null>).current = null;
+      pendingFpvRef.current = null;
       fpvLookupDoneRef.current = false;
       setFpvSeedCenter({ lng: match.longitude, lat: match.latitude });
       setFpvIcao24(pending);
@@ -86,7 +87,7 @@ export function useFlightMonitors(
     if (!fpvLookupDoneRef.current && displayFlights.length > 0) {
       fpvLookupDoneRef.current = true;
       const controller = new AbortController();
-      fetchFlightByIcao24(pending, controller.signal)
+      fetchFlightByHex(pending, controller.signal)
         .then((result) => {
           if (
             result.flight &&
@@ -103,13 +104,11 @@ export function useFlightMonitors(
               lng: result.flight.longitude,
               lat: result.flight.latitude,
             });
-            (pendingFpvRef as React.MutableRefObject<string | null>).current =
-              null;
+            pendingFpvRef.current = null;
             setFpvIcao24(pending);
             setFollowIcao24(null);
           } else if (pendingFpvRef.current === pending) {
-            (pendingFpvRef as React.MutableRefObject<string | null>).current =
-              null;
+            pendingFpvRef.current = null;
             syncFpvToUrl(null, activeCity);
             if (result.flight) {
               setSelectedIcao24(result.flight.icao24);
@@ -117,9 +116,9 @@ export function useFlightMonitors(
           }
         })
         .catch(() => {
+          // Flight lookup failed (network error, timeout, or abort) — reset pending state
           if (pendingFpvRef.current === pending) {
-            (pendingFpvRef as React.MutableRefObject<string | null>).current =
-              null;
+            pendingFpvRef.current = null;
           }
         });
       return () => controller.abort();
@@ -139,10 +138,16 @@ export function useFlightMonitors(
   // ── FPV miss counting ────────────────────────────────────────────
 
   const fpvMissCountRef = useRef(0);
+  const fpvActivatedAtRef = useRef(0);
   useEffect(() => {
     if (!fpvIcao24) {
       fpvMissCountRef.current = 0;
+      fpvActivatedAtRef.current = 0;
       return;
+    }
+
+    if (fpvActivatedAtRef.current === 0) {
+      fpvActivatedAtRef.current = Date.now();
     }
 
     if (fpvFlight) {
@@ -156,7 +161,11 @@ export function useFlightMonitors(
         return () => clearTimeout(timer);
       }
     } else {
-      if (!rateLimited) {
+      // Grace period: don't count misses for the first 30s after FPV
+      // activation. This allows time for city changes and initial polls
+      // to complete when entering FPV from a deep-link.
+      const elapsed = Date.now() - fpvActivatedAtRef.current;
+      if (!rateLimited && elapsed > 30_000) {
         fpvMissCountRef.current += 1;
       }
       if (fpvMissCountRef.current >= 3) {
@@ -180,21 +189,40 @@ export function useFlightMonitors(
   // ── Follow miss counting ─────────────────────────────────────────
 
   const followMissCountRef = useRef(0);
+  const followActivatedAtRef = useRef(0);
   useEffect(() => {
     if (!followIcao24) {
       followMissCountRef.current = 0;
+      followActivatedAtRef.current = 0;
       return;
     }
+
+    if (followActivatedAtRef.current === 0) {
+      followActivatedAtRef.current = Date.now();
+    }
+
     if (followFlight) {
       followMissCountRef.current = 0;
     } else {
-      followMissCountRef.current += 1;
+      // Grace period: don't count misses for the first 15s after follow
+      // activation or during rate limiting. Prevents auto-deselection
+      // during city transitions or transient API failures.
+      const elapsed = Date.now() - followActivatedAtRef.current;
+      if (!rateLimited && elapsed > 15_000) {
+        followMissCountRef.current += 1;
+      }
       if (followMissCountRef.current >= 3) {
         const timer = setTimeout(() => setFollowIcao24(null), 0);
         return () => clearTimeout(timer);
       }
     }
-  }, [followIcao24, followFlight, displayFlights, setFollowIcao24]);
+  }, [
+    followIcao24,
+    followFlight,
+    rateLimited,
+    displayFlights,
+    setFollowIcao24,
+  ]);
 
   // ── Selected flight missing timeout ──────────────────────────────
 
@@ -227,14 +255,14 @@ export function useFlightMonitors(
 
     async function loadRepoStars() {
       try {
-        const res = await fetch(GITHUB_REPO_API, { cache: "no-store" });
+        const res = await fetch(GITHUB_REPO_API);
         if (!res.ok) return;
         const data = (await res.json()) as { stargazers_count?: number };
         if (mounted && typeof data.stargazers_count === "number") {
           setRepoStars(data.stargazers_count);
         }
       } catch {
-        /* silent fallback */
+        // GitHub API failures are non-critical — star count is cosmetic
       }
     }
 

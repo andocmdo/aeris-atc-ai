@@ -1,31 +1,86 @@
 "use client";
 
+import { useState, useCallback, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Dices, Plane, Radio, ShieldAlert } from "lucide-react";
+import { Dices, Plane, ShieldAlert } from "lucide-react";
+import {
+  AtcTrigger,
+  AtcFeedDropdown,
+  useAvailableFeeds,
+} from "@/components/ui/atc-panel";
+import {
+  ProviderTrigger,
+  ProviderDropdown,
+} from "@/components/ui/provider-panel";
+import type { UseAtcStreamReturn } from "@/hooks/use-atc-stream";
 
 type StatusBarProps = {
   flightCount: number;
   cityName: string;
+  cityIata: string;
+  cityCoordinates: [number, number];
   loading: boolean;
   rateLimited?: boolean;
   retryIn?: number;
   onNorthUp?: () => void;
   onResetView?: () => void;
   onRandomAirport?: () => void;
+  atc: UseAtcStreamReturn;
+  /** Incremented externally to toggle the feed dropdown (e.g. from keyboard shortcut) */
+  atcToggle?: number;
+  /** Current ADS-B data source (e.g. "adsb", "opensky", "none") */
+  source?: string | null;
 };
 
 export function StatusBar({
   flightCount,
   cityName,
+  cityIata,
+  cityCoordinates,
   loading,
   rateLimited = false,
   retryIn = 0,
   onNorthUp,
   onResetView,
   onRandomAirport,
+  atc,
+  atcToggle,
+  source,
 }: StatusBarProps) {
+  const [feedDropdownOpen, setFeedDropdownOpen] = useState(false);
+  const [providerDropdownOpen, setProviderDropdownOpen] = useState(false);
+  const availableFeeds = useAvailableFeeds(cityIata, cityCoordinates);
+  const prevToggleRef = useRef(atcToggle);
+
+  // React to external toggle (keyboard shortcut)
+  useEffect(() => {
+    if (atcToggle !== undefined && atcToggle !== prevToggleRef.current) {
+      prevToggleRef.current = atcToggle;
+      setFeedDropdownOpen((p) => !p);
+    }
+  }, [atcToggle]);
+
+  const toggleFeedDropdown = useCallback(() => {
+    setProviderDropdownOpen(false);
+    setFeedDropdownOpen((p) => !p);
+  }, []);
+
+  const closeFeedDropdown = useCallback(() => {
+    setFeedDropdownOpen(false);
+  }, []);
+
+  const toggleProviderDropdown = useCallback(() => {
+    setFeedDropdownOpen(false);
+    setProviderDropdownOpen((p) => !p);
+  }, []);
+
+  const closeProviderDropdown = useCallback(() => {
+    setProviderDropdownOpen(false);
+  }, []);
+
+  const isAtcPlaying = atc.status === "playing";
   return (
-    <div className="flex flex-col items-start gap-2">
+    <div className="relative flex flex-col items-start gap-2">
       <AnimatePresence>
         {rateLimited && (
           <motion.div
@@ -70,19 +125,12 @@ export function StatusBar({
           aria-live="polite"
           aria-atomic="true"
         >
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Radio
-                className={`h-3 w-3 ${rateLimited ? "text-amber-400/80" : "text-emerald-400/80"}`}
-              />
-            </div>
-            <span
-              className="text-[11px] font-medium tracking-wide"
-              style={{ color: "rgb(var(--ui-fg) / 0.4)" }}
-            >
-              {rateLimited ? "Paused" : loading ? "Scanning..." : "Live"}
-            </span>
-          </div>
+          <ProviderTrigger
+            source={source ?? null}
+            loading={loading}
+            rateLimited={rateLimited}
+            onClick={toggleProviderDropdown}
+          />
 
           <div
             className="h-3 w-px"
@@ -113,6 +161,14 @@ export function StatusBar({
           >
             {cityName}
           </span>
+
+          {/* ATC trigger */}
+          <AtcTrigger
+            hasFeeds={availableFeeds.length > 0}
+            isPlaying={isAtcPlaying}
+            isError={atc.status === "error" || atc.status === "blocked"}
+            onClick={toggleFeedDropdown}
+          />
         </motion.div>
 
         <motion.div
@@ -176,6 +232,19 @@ export function StatusBar({
           </button>
         </motion.div>
       </div>
+
+      {/* Dropdowns — positioned above entire status bar */}
+      <ProviderDropdown
+        open={providerDropdownOpen}
+        onClose={closeProviderDropdown}
+        currentSource={source ?? null}
+      />
+      <AtcFeedDropdown
+        feeds={availableFeeds}
+        atc={atc}
+        open={feedDropdownOpen}
+        onClose={closeFeedDropdown}
+      />
     </div>
   );
 }

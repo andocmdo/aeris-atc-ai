@@ -10,6 +10,7 @@ type ShortcutActions = {
   onToggleHelp: () => void;
   onDeselect: () => void;
   onToggleFpv: () => void;
+  onToggleAtc?: () => void;
   isFpv?: boolean;
 };
 
@@ -26,10 +27,6 @@ export function useKeyboardShortcuts(actions: ShortcutActions) {
     function handler(e: KeyboardEvent) {
       const target = e.target as HTMLElement;
 
-      const dialogOpen = !!document.querySelector(
-        '[role="dialog"][aria-modal="true"]',
-      );
-
       const a = ref.current;
 
       // Ctrl/Cmd+K opens search from anywhere (even inside inputs)
@@ -43,6 +40,12 @@ export function useKeyboardShortcuts(actions: ShortcutActions) {
       if (INPUT_TAGS.has(target.tagName) || target.isContentEditable) return;
 
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      // Deferred dialog check — only query DOM when we actually need it
+      // (most keydowns short-circuit above, avoiding unnecessary DOM traversal)
+      const dialogOpen = !!document.querySelector(
+        '[role="dialog"][aria-modal="true"]',
+      );
 
       if (e.key === "Escape") {
         if (!dialogOpen) a.onDeselect();
@@ -87,6 +90,11 @@ export function useKeyboardShortcuts(actions: ShortcutActions) {
         case "?":
           e.preventDefault();
           a.onToggleHelp();
+          break;
+        case "a":
+        case "A":
+          e.preventDefault();
+          a.onToggleAtc?.();
           break;
       }
     }

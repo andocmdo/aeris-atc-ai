@@ -9,8 +9,16 @@ import {
   Palette,
   Globe,
   ArrowLeftRight,
+  Shield,
+  Flame,
+  Eye,
 } from "lucide-react";
-import { useSettings, type OrbitDirection } from "@/hooks/use-settings";
+import {
+  useSettings,
+  AIRSPACE_OPACITY_MIN,
+  AIRSPACE_OPACITY_MAX,
+  type OrbitDirection,
+} from "@/hooks/use-settings";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Slider } from "@/components/ui/slider";
 import { SHORTCUTS } from "@/components/ui/keyboard-shortcuts-help";
@@ -40,6 +48,9 @@ export function SettingsContent() {
   return (
     <ScrollArea className="h-full">
       <div className="space-y-0.5 p-3 pt-1">
+        {/* ── Camera ── */}
+        <SectionHeader title="Camera" />
+
         <SettingRow
           icon={<RotateCw className="h-4 w-4" />}
           title="Auto-orbit"
@@ -64,7 +75,8 @@ export function SettingsContent() {
           </>
         )}
 
-        <div className="mx-3 my-2 h-px bg-white/4" />
+        {/* ── Visuals ── */}
+        <SectionHeader title="Visuals" />
 
         <SettingRow
           icon={<Route className="h-4 w-4" />}
@@ -100,7 +112,35 @@ export function SettingsContent() {
           onChange={(v) => update("showAltitudeColors", v)}
         />
 
-        <div className="mx-3 my-2 h-px bg-white/4" />
+        {/* ── Airspace ── */}
+        <SectionHeader title="Airspace" />
+
+        <SettingRow
+          icon={<Shield className="h-4 w-4" />}
+          title="Airspace overlay"
+          description="Show classified airspace boundaries (OpenAIP)"
+          checked={settings.showAirspace}
+          onChange={(v) => update("showAirspace", v)}
+        />
+
+        {settings.showAirspace && (
+          <>
+            <AirspaceOpacitySlider
+              value={settings.airspaceOpacity}
+              onChange={(v) => update("airspaceOpacity", v)}
+            />
+            <SettingRow
+              icon={<Flame className="h-4 w-4" />}
+              title="Thermal hotspots"
+              description="Glider & paraglider thermal activity areas"
+              checked={settings.showAirspaceHotspots}
+              onChange={(v) => update("showAirspaceHotspots", v)}
+            />
+          </>
+        )}
+
+        {/* ── Performance ── */}
+        <SectionHeader title="Performance" />
 
         <SettingRow
           icon={<Globe className="h-4 w-4" />}
@@ -290,6 +330,51 @@ function TrailDistanceSlider({
   );
 }
 
+function AirspaceOpacitySlider({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex w-full items-center gap-3.5 rounded-xl px-3 py-2.5 text-left">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/5 text-white/35 ring-1 ring-white/6">
+        <Eye className="h-4 w-4" />
+      </div>
+      <div className="flex flex-1 min-w-0 flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <p className="text-[13px] font-medium text-white/80">
+            Airspace opacity
+          </p>
+          <span className="text-[11px] font-semibold text-white/40 tabular-nums">
+            {Math.round(value * 100)}%
+          </span>
+        </div>
+        <Slider
+          min={AIRSPACE_OPACITY_MIN}
+          max={AIRSPACE_OPACITY_MAX}
+          step={0.05}
+          value={[value]}
+          onValueChange={(vals) => onChange(vals[0])}
+          aria-label="Airspace opacity"
+        />
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({ title }: { title: string }) {
+  return (
+    <div className="flex items-center gap-2 px-3 pt-3 pb-1">
+      <span className="text-[10px] font-bold tracking-widest text-white/25 uppercase">
+        {title}
+      </span>
+      <div className="h-px flex-1 bg-white/4" />
+    </div>
+  );
+}
+
 function SettingRow({
   icon,
   title,
@@ -411,6 +496,42 @@ function Toggle({ checked }: { checked: boolean }) {
 
 const CHANGELOG = [
   {
+    date: "Mar 22",
+    title: "3D aircraft models & smoother trails",
+    description:
+      "14 distinct 3D aircraft silhouettes assigned by ADS-B category and ICAO type code — from wide-bodies to helicopters. Models hosted on Cloudinary CDN with lazy loading and prefetch. Trail smoothing overhauled: 5-pass kernel filter, tighter corner rounding (15°), denser Catmull–Rom splines, and wider junction blending between historical and live data. Aircraft rendered 12% smaller for better proportions.",
+  },
+  {
+    date: "Mar 22",
+    title: "Multi-source flight data & circuit breaker",
+    description:
+      "Switched from OpenSky-only to a 2-tier fallback: adsb.lol → OpenSky (airplanes.live available via override). Each provider has its own parser normalising into a shared FlightState format. Circuit breaker tracks failures per provider and temporarily disables broken ones. Empty-response guard prevents data wipe-outs during transient failures, and an immediate re-fetch fires on network reconnect.",
+  },
+  {
+    date: "Mar 22",
+    title: "Code review fixes",
+    description:
+      "Fixed GPU memory monitor (duplicate WebGL enum cases, wrong byte sizes). Selection pulse halos now match aircraft height at all zoom levels. ATC stream properly cancels upstream on timeout. Airspace tile rate-limiter enforces spacing for queued requests. Photo fetch errors now surface to the UI. Spline cache clearing moved from useMemo to useEffect for React strict mode safety.",
+  },
+  {
+    date: "Mar 21",
+    title: "ATC feed lookup & GPU memory monitor",
+    description:
+      "New ATC lookup module — converts IATA to ICAO codes, finds nearby feeds by geographic proximity, and looks up feeds by airport or centre code. GPU memory monitor tracks WebGL resource allocations (textures, buffers, framebuffers) for debugging resource leaks.",
+  },
+  {
+    date: "Mar 20",
+    title: "Reliability & polish",
+    description:
+      "Serialised rate limiting in the flight API client. Logo cache with size limits and eviction. Registration country lookup via pre-built O(1) maps. Keyboard shortcuts focus trapping fix. SessionStorage guard for incognito mode. Airspace display toggle in map attribution. Utility functions extended with clamp().",
+  },
+  {
+    date: "Mar 13",
+    title: "Flight API client & rebase fixes",
+    description:
+      "New flight-api-client, flight-api-parsing, and flight-api-types modules. useFlights refactored to use the multi-source client — removed legacy credit management. useFlightMonitors switched to hex-based lookups. Fixed 6 files that diverged during rebase (IATA codes, globe mode ref, terrain attribution, cache eviction, OpenSky parsing).",
+  },
+  {
     date: "Mar 11",
     title: "Globe mode & aircraft photos",
     description:
@@ -459,8 +580,9 @@ export function AboutContent() {
         <div className="space-y-3 text-[13px] leading-relaxed text-white/40">
           <p>
             Live flight tracking in 3D. The planes you see are real — position
-            data comes from the OpenSky Network, updated every few seconds via
-            ADS-B receivers people run on their roofs worldwide.
+            data comes from ADS-B Exchange, adsb.lol, and OpenSky Network,
+            updated every few seconds via ADS-B receivers people run on their
+            roofs worldwide.
           </p>
           <p>
             You can search through 9,000+ airports, jump into first-person view
