@@ -58,10 +58,35 @@ export function tintAircraftColor(
   ];
 }
 
+/** Apply military (amber) or emergency (red) tint on top of normal color. */
+export function applySpecialTint(
+  color: [number, number, number, number],
+  dbFlags?: number | null,
+  emergencyStatus?: string | null,
+): [number, number, number, number] {
+  // Emergency overrides military
+  if (emergencyStatus && emergencyStatus !== "none") {
+    return [
+      Math.round(color[0] * 0.3 + 255 * 0.7),
+      Math.round(color[1] * 0.3 + 60 * 0.7),
+      Math.round(color[2] * 0.3 + 60 * 0.7),
+      color[3],
+    ];
+  }
+  if (((dbFlags ?? 0) & 1) !== 0) {
+    return [
+      Math.round(color[0] * 0.4 + 255 * 0.6),
+      Math.round(color[1] * 0.4 + 190 * 0.6),
+      Math.round(color[2] * 0.4 + 80 * 0.6),
+      color[3],
+    ];
+  }
+  return color;
+}
+
 // ── Selection pulse timing ─────────────────────────────────────────────
 
-export const PULSE_PERIOD_MS = 7000;
-export const RING_PERIOD_MS = 5500;
+export const PULSE_PERIOD_MS = 9000;
 
 // ── Canvas Atlas Generators ────────────────────────────────────────────
 
@@ -76,16 +101,18 @@ export function createHaloAtlas(): HTMLCanvasElement {
   for (let r = 0; r < c; r++) {
     const norm = r / c;
     let alpha = 0;
-    if (norm < 0.18) {
+    if (norm < 0.4) {
+      // Large clear center — no glow within ~40% of radius so it never
+      // overlaps the aircraft icon even at the largest category size.
       alpha = 0;
-    } else if (norm < 0.35) {
-      const t = (norm - 0.18) / 0.17;
-      alpha = t * t * 0.7;
     } else if (norm < 0.55) {
-      alpha = 0.7 - ((norm - 0.35) / 0.2) * 0.3;
+      const t = (norm - 0.4) / 0.15;
+      alpha = t * t * 0.4;
+    } else if (norm < 0.72) {
+      alpha = 0.4 - ((norm - 0.55) / 0.17) * 0.15;
     } else {
-      const t = (norm - 0.55) / 0.45;
-      alpha = 0.4 * (1 - t) * (1 - t);
+      const t = (norm - 0.72) / 0.28;
+      alpha = 0.25 * (1 - t) * (1 - t);
     }
     if (alpha < 0.003) continue;
     ctx.strokeStyle = `rgba(255,255,255,${alpha})`;

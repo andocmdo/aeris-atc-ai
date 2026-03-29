@@ -95,34 +95,37 @@ function rdpSimplify(
   return result;
 }
 
-/** Perpendicular distance from a point to a line segment (2D, using lng/lat). */
+/** Perpendicular distance from a point to a line segment (2D, using lng/lat).
+ *  Latitude-aware: scales longitude by cos(avgLat) so the distance metric
+ *  is approximately equidistant at high latitudes. */
 function perpendicularDistance(
   point: ElevatedPoint,
   lineStart: ElevatedPoint,
   lineEnd: ElevatedPoint,
 ): number {
-  const dx = lineEnd[0] - lineStart[0];
+  // Scale longitude by cos(average latitude) for accurate distance at
+  // high latitudes where 1° lng is much shorter than 1° lat.
+  const avgLat = (((point[1] + lineStart[1] + lineEnd[1]) / 3) * Math.PI) / 180;
+  const cosLat = Math.max(0.1, Math.cos(avgLat));
+
+  const dx = (lineEnd[0] - lineStart[0]) * cosLat;
   const dy = lineEnd[1] - lineStart[1];
   const denom = dx * dx + dy * dy;
 
   if (denom < 1e-12) {
-    const ex = point[0] - lineStart[0];
+    const ex = (point[0] - lineStart[0]) * cosLat;
     const ey = point[1] - lineStart[1];
     return Math.sqrt(ex * ex + ey * ey);
   }
 
-  const t = Math.max(
-    0,
-    Math.min(
-      1,
-      ((point[0] - lineStart[0]) * dx + (point[1] - lineStart[1]) * dy) / denom,
-    ),
-  );
+  const px = (point[0] - lineStart[0]) * cosLat;
+  const py = point[1] - lineStart[1];
+  const t = Math.max(0, Math.min(1, (px * dx + py * dy) / denom));
 
-  const projX = lineStart[0] + t * dx;
-  const projY = lineStart[1] + t * dy;
-  const ex = point[0] - projX;
-  const ey = point[1] - projY;
+  const projX = t * dx;
+  const projY = t * dy;
+  const ex = px - projX;
+  const ey = py - projY;
   return Math.sqrt(ex * ex + ey * ey);
 }
 
@@ -146,18 +149,25 @@ function uniformSample(
 // ---------------------------------------------------------------------------
 
 /**
- * Remove "spike" points where the path reverses direction sharply,
- * creating V-shaped artifacts.
+ * Remove "spike" points where the path reverses direction sharply
+ * (V-shaped artifacts) or has asymmetric segment lengths (GPS noise).
  */
 export function removeSpikePoints(
   path: [number, number][],
   altitudes: Array<number | null>,
-  cosThreshold: number = -0.5,
+  cosThreshold: number = -0.05,
 ): { path: [number, number][]; altitudes: Array<number | null> } {
   if (path.length < 3) return { path, altitudes };
 
+  // Pre-filter: mark points with NaN/Infinity coordinates for removal.
   const keep: boolean[] = new Array(path.length).fill(true);
   let removed = 0;
+  for (let i = 0; i < path.length; i++) {
+    if (!Number.isFinite(path[i][0]) || !Number.isFinite(path[i][1])) {
+      keep[i] = false;
+      removed++;
+    }
+  }
 
   for (let pass = 0; pass < 3; pass++) {
     let changed = false;
@@ -188,7 +198,116 @@ export function removeSpikePoints(
 
       const cos = (dx1 * dx2 + dy1 * dy2) / (len1 * len2);
 
+      // Hard direction reversal (>~120°)
       if (cos < cosThreshold) {
+        keep[i] = false;
+        removed++;
+        changed = true;
+        continue;
+      }
+
+      // Moderate turn (>90°) with asymmetric segment lengths (GPS spike).
+      if (cos < 0) {
+        const lengthRatio = Math.max(len1, len2) / Math.min(len1, len2);
+        if (lengthRatio > 4) {
+          keep[i] = false;
+          removed++;
+          changed = true;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+
+  if (removed === 0) return { path, altitudes };
+
+  const newPath: [number, number][] = [];
+  const newAlt: Array<number | null> = [];
+  for (let i = 0; i < path.length; i++) {
+    if (keep[i]) {
+      newPath.push(path[i]);
+      newAlt.push(altitudes[i] ?? null);
+    }
+  }
+
+  return { path: newPath, altitudes: newAlt };
+}
+
+// ---------------------------------------------------------------------------
+// Distance-based outlier removal
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove points whose perpendicular distance to the line connecting
+ * their kept neighbours exceeds `thresholdMultiplier` × median segment
+ * distance. Catches GPS/MLAT artifacts that spike removal misses.
+ */
+export function removeDistanceOutliers(
+  path: [number, number][],
+  altitudes: Array<number | null>,
+  thresholdMultiplier: number = 3.0,
+): { path: [number, number][]; altitudes: Array<number | null> } {
+  if (path.length < 5) return { path, altitudes };
+
+  // Calculate all segment distances for the median baseline.
+  const segDists: number[] = [];
+  for (let i = 1; i < path.length; i++) {
+    const dx = path[i][0] - path[i - 1][0];
+    const dy = path[i][1] - path[i - 1][1];
+    segDists.push(Math.sqrt(dx * dx + dy * dy));
+  }
+
+  const sorted = [...segDists].sort((a, b) => a - b);
+  const medianDist = sorted[Math.floor(sorted.length / 2)];
+  if (medianDist < 1e-8) return { path, altitudes };
+
+  const threshold = medianDist * thresholdMultiplier;
+  const keep = new Array(path.length).fill(true);
+  // Always keep first and last points.
+  let removed = 0;
+
+  for (let pass = 0; pass < 2; pass++) {
+    let changed = false;
+    for (let i = 1; i < path.length - 1; i++) {
+      if (!keep[i]) continue;
+
+      // Find kept neighbours.
+      let prevIdx = i - 1;
+      while (prevIdx >= 0 && !keep[prevIdx]) prevIdx--;
+      if (prevIdx < 0) continue;
+
+      let nextIdx = i + 1;
+      while (nextIdx < path.length && !keep[nextIdx]) nextIdx++;
+      if (nextIdx >= path.length) continue;
+
+      const prev = path[prevIdx];
+      const curr = path[i];
+      const next = path[nextIdx];
+
+      // Perpendicular distance from curr to line(prev, next).
+      const dx = next[0] - prev[0];
+      const dy = next[1] - prev[1];
+      const lineLenSq = dx * dx + dy * dy;
+
+      let perpDist: number;
+      if (lineLenSq < 1e-12) {
+        perpDist = Math.sqrt(
+          (curr[0] - prev[0]) ** 2 + (curr[1] - prev[1]) ** 2,
+        );
+      } else {
+        const t = Math.max(
+          0,
+          Math.min(
+            1,
+            ((curr[0] - prev[0]) * dx + (curr[1] - prev[1]) * dy) / lineLenSq,
+          ),
+        );
+        const projX = prev[0] + t * dx;
+        const projY = prev[1] + t * dy;
+        perpDist = Math.sqrt((curr[0] - projX) ** 2 + (curr[1] - projY) ** 2);
+      }
+
+      if (perpDist > threshold) {
         keep[i] = false;
         removed++;
         changed = true;
@@ -402,9 +521,9 @@ export function removePathLoops(path: ElevatedPoint[]): ElevatedPoint[] {
   if (path.length < 8) return path;
 
   let result = path;
-  const MAX_WINDOW = 120;
+  const MAX_WINDOW = 500;
 
-  for (let pass = 0; pass < 5; pass++) {
+  for (let pass = 0; pass < 8; pass++) {
     let found = false;
 
     outer: for (let i = 0; i < result.length - 3; i++) {

@@ -15,6 +15,8 @@ import {
   Camera,
   ImageOff,
   Plane,
+  Shield,
+  AlertTriangle,
 } from "lucide-react";
 import { useAircraftPhotos } from "@/hooks/use-aircraft-photos";
 import type { FlightState } from "@/lib/opensky";
@@ -61,6 +63,14 @@ function squawkLabel(squawk: string): string {
   }
 }
 
+function isMilitary(dbFlags?: number | null): boolean {
+  return ((dbFlags ?? 0) & 1) !== 0;
+}
+
+function isEmergencyStatus(status?: string | null): boolean {
+  return !!status && status !== "none";
+}
+
 export function MobileFlightToast({
   flight,
   onClose,
@@ -76,8 +86,8 @@ export function MobileFlightToast({
   const canEnterFpv =
     flight.longitude != null && flight.latitude != null && !flight.onGround;
 
-  // ── Airline logo with fallback chain ──────────────────────────────
-  const logoCandidates = airlineLogoCandidates(airline);
+  // â”€â”€ Airline logo with fallback chain â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const logoCandidates = airlineLogoCandidates(airline, flight.callsign);
   const [logoIndexByAirline, setLogoIndexByAirline] = useState<
     Record<string, number>
   >({});
@@ -107,14 +117,14 @@ export function MobileFlightToast({
   const showLogo = Boolean(logoUrl);
   const genericLogoUrl = "/airline-logos/envoy-air.png";
 
-  // ── Aircraft photos & details ──────────────────────────────────────
+  // â”€â”€ Aircraft photos & details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const {
     photos,
     aircraft: aircraftDetails,
     loading: photosLoading,
   } = useAircraftPhotos(flight.icao24, flight.registration);
 
-  // ── Photo carousel state ───────────────────────────────────────────
+  // â”€â”€ Photo carousel state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const scrollRef = useRef<HTMLDivElement>(null);
   const [activeSlide, setActiveSlide] = useState(0);
   const [slideLoadState, setSlideLoadState] = useState<
@@ -163,20 +173,20 @@ export function MobileFlightToast({
   const showPhotos = !photosLoading && hasPhotos;
 
   return (
-    <div className="w-full overflow-hidden rounded-2xl border border-white/8 bg-black/80 shadow-2xl shadow-black/50 backdrop-blur-2xl">
+    <div className="w-full overflow-hidden rounded-2xl border border-foreground/8 bg-background/80 shadow-2xl shadow-background/50 backdrop-blur-2xl">
       {/* Photo carousel / hero banner */}
-      <div className="relative h-36 w-full overflow-hidden bg-white/5">
+      <div className="relative h-36 w-full overflow-hidden bg-foreground/5">
         {/* Skeleton while loading */}
         {photosLoading && !hasPhotos && (
           <span
             aria-hidden
-            className="absolute inset-0 animate-pulse bg-linear-to-br from-white/5 via-white/8 to-white/5"
+            className="absolute inset-0 animate-pulse bg-linear-to-br from-foreground/5 via-foreground/8 to-foreground/5"
           />
         )}
 
         {/* No image placeholder */}
         {!photosLoading && !hasPhotos && (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-white/15">
+          <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-foreground/15">
             <ImageOff className="h-4 w-4" />
             <span className="text-[9px] font-medium">No photo</span>
           </div>
@@ -200,11 +210,11 @@ export function MobileFlightToast({
                   slideLoadState[i] !== "error" && (
                     <span
                       aria-hidden
-                      className="absolute inset-0 animate-pulse bg-linear-to-br from-white/5 via-white/8 to-white/5"
+                      className="absolute inset-0 animate-pulse bg-linear-to-br from-foreground/5 via-foreground/8 to-foreground/5"
                     />
                   )}
                 {slideLoadState[i] === "error" ? (
-                  <div className="flex h-full w-full items-center justify-center text-white/15">
+                  <div className="flex h-full w-full items-center justify-center text-foreground/15">
                     <ImageOff className="h-5 w-5" />
                   </div>
                 ) : mountedSlides.has(i) ? (
@@ -234,7 +244,7 @@ export function MobileFlightToast({
 
         {/* Photographer attribution */}
         {showPhotos && photos[activeSlide]?.photographer && (
-          <span className="absolute bottom-1.5 right-2 z-10 flex items-center gap-0.5 rounded-full bg-black/45 px-1.5 py-0.5 text-[8px] font-medium text-white/55 backdrop-blur-sm">
+          <span className="absolute bottom-1.5 right-2 z-10 flex items-center gap-0.5 rounded-full bg-background/45 px-1.5 py-0.5 text-[8px] font-medium text-foreground/55 backdrop-blur-sm">
             <Camera className="h-2 w-2" />
             {photos[activeSlide].photographer}
           </span>
@@ -247,12 +257,12 @@ export function MobileFlightToast({
               <span
                 key={i}
                 className={`h-1 w-1 rounded-full transition-colors duration-200 ${
-                  i === activeSlide ? "bg-white/80" : "bg-white/30"
+                  i === activeSlide ? "bg-foreground/80" : "bg-foreground/30"
                 }`}
               />
             ))}
             {photos.length > 10 && (
-              <span className="text-[7px] leading-none text-white/30">
+              <span className="text-[7px] leading-none text-foreground/30">
                 +{photos.length - 10}
               </span>
             )}
@@ -261,7 +271,7 @@ export function MobileFlightToast({
 
         {/* Slide counter */}
         {showPhotos && photos.length > 1 && (
-          <span className="absolute top-1.5 right-2 z-10 rounded-full bg-black/45 px-1.5 py-0.5 text-[8px] font-semibold tabular-nums text-white/60 backdrop-blur-sm">
+          <span className="absolute top-1.5 right-2 z-10 rounded-full bg-background/45 px-1.5 py-0.5 text-[8px] font-semibold tabular-nums text-foreground/60 backdrop-blur-sm">
             {activeSlide + 1}/{photos.length}
           </span>
         )}
@@ -271,9 +281,9 @@ export function MobileFlightToast({
         {/* Header row: logo + callsign + close */}
         <div className="flex items-center gap-3">
           {/* Airline logo */}
-          <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-white/14 bg-white/10 shadow-md shadow-black/25">
+          <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-foreground/14 bg-foreground/10 shadow-md shadow-background/25">
             {showLogo ? (
-              <span className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-black/10 bg-white/95 p-2 shadow-sm">
+              <span className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-foreground/10 bg-white/95 p-2 shadow-sm">
                 {!logoLoaded && (
                   <span
                     aria-hidden="true"
@@ -313,10 +323,10 @@ export function MobileFlightToast({
                 />
               </span>
             ) : (
-              <span className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-white/95 p-2 shadow-sm">
+              <span className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-foreground/10 bg-white/95 p-2 shadow-sm">
                 {genericLogoFailed ? (
-                  <span className="text-[16px] font-semibold text-black/25">
-                    —
+                  <span className="text-[16px] font-semibold text-background/25">
+                    â€”
                   </span>
                 ) : (
                   <Image
@@ -335,12 +345,12 @@ export function MobileFlightToast({
 
           {/* Callsign + identifiers */}
           <div className="min-w-0 flex-1">
-            <p className="truncate text-[15px] font-bold leading-tight text-white">
+            <p className="truncate text-[15px] font-bold leading-tight text-foreground">
               {formatCallsign(flight.callsign)}
             </p>
-            <p className="mt-0.5 truncate text-[10px] font-medium tracking-widest text-white/30 uppercase">
+            <p className="mt-0.5 truncate text-[10px] font-medium tracking-widest text-foreground/30 uppercase">
               {flight.icao24}
-              {flightNum ? ` · #${flightNum}` : ""}
+              {flightNum ? ` Â· #${flightNum}` : ""}
             </p>
           </div>
 
@@ -348,24 +358,24 @@ export function MobileFlightToast({
           <button
             type="button"
             onClick={onClose}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/5 transition-colors active:bg-white/10"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-foreground/5 transition-colors active:bg-foreground/10"
             aria-label="Close flight details"
           >
-            <X className="h-3.5 w-3.5 text-white/40" />
+            <X className="h-3.5 w-3.5 text-foreground/40" />
           </button>
         </div>
-
         {/* Airline / model */}
         {company && (
           <div className="mt-2 flex items-center gap-1.5">
-            <Building2 className="h-3 w-3 shrink-0 text-white/20" />
-            <p className="truncate text-[11px] font-medium text-white/45">
+            <Building2 className="h-3 w-3 shrink-0 text-foreground/20" />
+            <p className="truncate text-[11px] font-medium text-foreground/45">
               {company}
-              {model ? <span className="text-white/25"> · {model}</span> : null}
+              {model ? (
+                <span className="text-foreground/25"> Â· {model}</span>
+              ) : null}
             </p>
           </div>
         )}
-
         {/* Aircraft details (registration, type, owner) */}
         {aircraftDetails &&
           (aircraftDetails.registration ||
@@ -373,22 +383,40 @@ export function MobileFlightToast({
             aircraftDetails.typeCode ||
             aircraftDetails.owner) && (
             <div className="mt-1.5 flex items-center gap-1.5">
-              <Plane className="h-3 w-3 shrink-0 text-white/20" />
-              <p className="truncate text-[11px] text-white/35">
+              <Plane className="h-3 w-3 shrink-0 text-foreground/20" />
+              <p className="truncate text-[11px] text-foreground/35">
                 {[
                   aircraftDetails.registration,
                   aircraftDetails.type ?? aircraftDetails.typeCode,
                   aircraftDetails.owner,
                 ]
                   .filter(Boolean)
-                  .join(" · ")}
+                  .join(" Â· ")}
               </p>
             </div>
           )}
+        {/* Military / Emergency badges */}
+        {(isMilitary(flight.dbFlags) ||
+          isEmergencyStatus(flight.emergencyStatus)) && (
+          <div className="mt-2 flex items-center gap-1.5 px-0">
+            {isMilitary(flight.dbFlags) && (
+              <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-amber-400 uppercase ring-1 ring-amber-400/20">
+                <Shield className="h-2.5 w-2.5" />
+                MIL
+              </span>
+            )}
+            {isEmergencyStatus(flight.emergencyStatus) && (
+              <span className="inline-flex animate-pulse items-center gap-1 rounded bg-red-500/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-red-400 uppercase ring-1 ring-red-400/25">
+                <AlertTriangle className="h-2.5 w-2.5" />
+                {flight.emergencyStatus?.toUpperCase()}
+              </span>
+            )}
+          </div>
+        )}{" "}
       </div>
 
       {/* Metrics 4-column grid */}
-      <div className="grid grid-cols-4 gap-px border-t border-white/5 bg-white/[0.02]">
+      <div className="grid grid-cols-4 gap-px border-t border-foreground/5 bg-foreground/2">
         <MiniMetric
           icon={<ArrowUp className="h-2.5 w-2.5" />}
           label="ALT"
@@ -404,8 +432,8 @@ export function MobileFlightToast({
           label="HDG"
           value={
             heading !== null && Number.isFinite(heading)
-              ? `${Math.round(heading)}° ${cardinal}`
-              : "—"
+              ? `${Math.round(heading)}Â° ${cardinal}`
+              : "â€”"
           }
         />
         <MiniMetric
@@ -414,24 +442,26 @@ export function MobileFlightToast({
           value={
             flight.verticalRate !== null && Number.isFinite(flight.verticalRate)
               ? `${flight.verticalRate > 0 ? "+" : ""}${Math.round(flight.verticalRate)}`
-              : "—"
+              : "â€”"
           }
         />
       </div>
 
       {/* Info section: origin, heading + coords, squawk */}
-      <div className="flex flex-col gap-1.5 border-t border-white/5 px-3.5 py-2.5">
+      <div className="flex flex-col gap-1.5 border-t border-foreground/5 px-3.5 py-2.5">
         {/* Origin country */}
         <div className="flex items-center gap-1.5">
-          <Globe className="h-3 w-3 text-white/25" />
-          <p className="text-[11px] text-white/40">{flight.originCountry}</p>
+          <Globe className="h-3 w-3 text-foreground/25" />
+          <p className="text-[11px] text-foreground/40">
+            {flight.originCountry}
+          </p>
         </div>
 
         {/* Heading direction + coordinates */}
         {cardinal && (
           <div className="flex items-center gap-1.5">
             <Navigation
-              className="h-3 w-3 text-white/25"
+              className="h-3 w-3 text-foreground/25"
               style={{
                 transform:
                   heading !== null && Number.isFinite(heading)
@@ -439,17 +469,17 @@ export function MobileFlightToast({
                     : undefined,
               }}
             />
-            <p className="text-[11px] text-white/40">
+            <p className="text-[11px] text-foreground/40">
               Heading {cardinal}
               {flight.latitude !== null &&
                 flight.longitude !== null &&
                 Number.isFinite(flight.latitude) &&
                 Number.isFinite(flight.longitude) && (
-                  <span className="text-white/20">
+                  <span className="text-foreground/20">
                     {" "}
-                    · {Math.abs(flight.latitude).toFixed(2)}°
+                    Â· {Math.abs(flight.latitude).toFixed(2)}Â°
                     {flight.latitude >= 0 ? "N" : "S"},{" "}
-                    {Math.abs(flight.longitude).toFixed(2)}°
+                    {Math.abs(flight.longitude).toFixed(2)}Â°
                     {flight.longitude >= 0 ? "E" : "W"}
                   </span>
                 )}
@@ -464,7 +494,7 @@ export function MobileFlightToast({
               className={`h-3 w-3 text-center text-[8px] font-bold leading-3 ${
                 isEmergencySquawk(flight.squawk)
                   ? "text-red-400"
-                  : "text-white/25"
+                  : "text-foreground/25"
               }`}
             >
               SQ
@@ -473,7 +503,7 @@ export function MobileFlightToast({
               className={`font-mono text-[11px] tabular-nums ${
                 isEmergencySquawk(flight.squawk)
                   ? "text-red-400"
-                  : "text-white/40"
+                  : "text-foreground/40"
               }`}
             >
               {flight.squawk}
@@ -489,14 +519,14 @@ export function MobileFlightToast({
 
       {/* FPV button */}
       {onToggleFpv && (
-        <div className="border-t border-white/5">
+        <div className="border-t border-foreground/5">
           <button
             type="button"
             onClick={() =>
               (isFpvActive || canEnterFpv) && onToggleFpv(flight.icao24)
             }
             disabled={!isFpvActive && !canEnterFpv}
-            className={`flex w-full items-center justify-center gap-1.5 py-2.5 transition-colors active:bg-white/5 ${
+            className={`flex w-full items-center justify-center gap-1.5 py-2.5 transition-colors active:bg-foreground/5 ${
               !isFpvActive && !canEnterFpv
                 ? "cursor-not-allowed opacity-30"
                 : ""
@@ -506,11 +536,11 @@ export function MobileFlightToast({
             }
           >
             <Eye
-              className={`h-3 w-3 ${isFpvActive ? "text-emerald-400" : "text-white/30"}`}
+              className={`h-3 w-3 ${isFpvActive ? "text-emerald-400" : "text-foreground/30"}`}
             />
             <span
               className={`text-[10px] font-semibold tracking-wider uppercase ${
-                isFpvActive ? "text-emerald-400/70" : "text-white/35"
+                isFpvActive ? "text-emerald-400/70" : "text-foreground/35"
               }`}
             >
               {isFpvActive ? "Exit FPV" : "First Person View"}
@@ -533,13 +563,13 @@ function MiniMetric({
 }) {
   return (
     <div className="flex flex-col items-center gap-0.5 py-2.5">
-      <div className="flex items-center gap-1 text-white/20">
+      <div className="flex items-center gap-1 text-foreground/20">
         {icon}
         <span className="text-[8px] font-bold tracking-widest uppercase">
           {label}
         </span>
       </div>
-      <p className="text-[12px] font-semibold tabular-nums text-white/85">
+      <p className="text-[12px] font-semibold tabular-nums text-foreground/85">
         {value}
       </p>
     </div>

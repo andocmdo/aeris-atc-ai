@@ -8,8 +8,8 @@ const FT_TO_M = 0.3048;
 const TRACE_TIMEOUT_MS = 10_000;
 const OPENSKY_TIMEOUT_MS = 8_000;
 
-const TARGET_WAYPOINTS = 60;
-const MAX_AGE_SECONDS = 90 * 60;
+const TARGET_WAYPOINTS = 120;
+const MAX_AGE_SECONDS = 120 * 60;
 
 const GLOBE_TRACE_SOURCES = [
   {
@@ -36,11 +36,48 @@ const OPENSKY_API = "https://opensky-network.org/api";
 
 const APP_UA = "Aeris/1.0 (flight-tracker; +https://github.com/kewonit/aeris)";
 
-let lastRequestTime = 0;
-const RATE_MS = 800;
-
 // trace[i] = [offset_sec, lat, lng, alt_ft|"ground"|null, gs, track, flags, vrate, ...]
 // flags bit 0 = stale
+/**
+ * Trim waypoints to only the last flight leg.
+ *
+ * Finds the last ground→airborne transition (requiring at least
+ * `MIN_GROUND_FOR_SPLIT` consecutive ground points to avoid false
+ * triggers from GPS noise). Includes one ground waypoint before
+ * takeoff as a departure airport anchor so the trail visually
+ * starts at the runway.
+ *
+ * If no multi-point ground segment is found (single-leg flight or
+ * all-airborne trace), returns the input unchanged.
+ */
+const MIN_GROUND_FOR_SPLIT = 2;
+
+function trimToLastFlight(waypoints: TrackWaypoint[]): TrackWaypoint[] {
+  if (waypoints.length < 3) return waypoints;
+
+  let lastTakeoffIdx = -1;
+
+  for (let i = 1; i < waypoints.length; i++) {
+    if (!waypoints[i].onGround && waypoints[i - 1].onGround) {
+      // Count consecutive ground points before this transition
+      let groundCount = 0;
+      for (let j = i - 1; j >= 0; j--) {
+        if (waypoints[j].onGround) groundCount++;
+        else break;
+      }
+      if (groundCount >= MIN_GROUND_FOR_SPLIT) {
+        lastTakeoffIdx = i;
+      }
+    }
+  }
+
+  if (lastTakeoffIdx <= 0) return waypoints;
+
+  // Include one ground point before takeoff as departure anchor
+  const startIdx = Math.max(0, lastTakeoffIdx - 1);
+  return waypoints.slice(startIdx);
+}
+
 function parseReadsbTrace(hex: string, data: unknown): FlightTrack | null {
   if (typeof data !== "object" || data === null) return null;
 
@@ -63,6 +100,33 @@ function parseReadsbTrace(hex: string, data: unknown): FlightTrack | null {
   }
   const cutoffOffset = latestOffset - MAX_AGE_SECONDS;
 
+  // ── Pre-scan: find the last new-leg marker (flags & 2) ─────────
+  // readsb sets this flag at the start of a new flight leg, which is
+  // the most reliable signal for detecting the last departure.
+  // See: https://github.com/wiedehopf/readsb/blob/dev/README-json.md
+  let lastNewLegOffset = -Infinity;
+  let hasNewLegFlag = false;
+
+  for (const entry of rawTrace) {
+    if (!Array.isArray(entry) || entry.length < 7) continue;
+    const offset = typeof entry[0] === "number" ? entry[0] : null;
+    if (offset === null || !Number.isFinite(offset)) continue;
+    if (offset < cutoffOffset) continue;
+    const flags = typeof entry[6] === "number" ? entry[6] : 0;
+    if (flags & 1) continue; // skip stale
+    if (flags & 2) {
+      lastNewLegOffset = offset;
+      hasNewLegFlag = true;
+    }
+  }
+
+  // Allow up to 90 seconds before the new-leg marker so that the
+  // departure airport position is included as an anchor point.
+  const NEW_LEG_ANCHOR_SEC = 90;
+  const legCutoff = hasNewLegFlag
+    ? lastNewLegOffset - NEW_LEG_ANCHOR_SEC
+    : -Infinity;
+
   const waypoints: TrackWaypoint[] = [];
 
   for (const entry of rawTrace) {
@@ -72,6 +136,9 @@ function parseReadsbTrace(hex: string, data: unknown): FlightTrack | null {
     if (offset === null || !Number.isFinite(offset)) continue;
 
     if (offset < cutoffOffset) continue;
+
+    // Skip entries before the last flight leg
+    if (offset < legCutoff) continue;
 
     const lat = typeof entry[1] === "number" ? entry[1] : null;
     const lng = typeof entry[2] === "number" ? entry[2] : null;
@@ -117,11 +184,22 @@ function parseReadsbTrace(hex: string, data: unknown): FlightTrack | null {
 
   waypoints.sort((a, b) => a.time - b.time);
 
-  const deduped: TrackWaypoint[] = [waypoints[0]];
-  for (let i = 1; i < waypoints.length; i++) {
+  // If no new-leg flag was found, fall back to onGround detection
+  // to trim to the last flight leg.
+  const legTrimmed = hasNewLegFlag ? waypoints : trimToLastFlight(waypoints);
+
+  const deduped: TrackWaypoint[] = [legTrimmed[0]];
+  for (let i = 1; i < legTrimmed.length; i++) {
     const prev = deduped[deduped.length - 1];
-    const curr = waypoints[i];
-    if (prev.latitude === curr.latitude && prev.longitude === curr.longitude) {
+    const curr = legTrimmed[i];
+    // Skip exact duplicates and near-duplicates (< ~30m apart) from GPS jitter.
+    const dlat = (curr.latitude ?? 0) - (prev.latitude ?? 0);
+    const dlng = (curr.longitude ?? 0) - (prev.longitude ?? 0);
+    if (dlat * dlat + dlng * dlng < 0.0003 * 0.0003) {
+      // Keep the later point if it has better altitude data.
+      if (curr.baroAltitude != null && prev.baroAltitude == null) {
+        deduped[deduped.length - 1] = curr;
+      }
       continue;
     }
     deduped.push(curr);
@@ -213,12 +291,18 @@ function parseOpenSkyTrack(hex: string, data: unknown): FlightTrack | null {
 
   waypoints.sort((a, b) => a.time - b.time);
 
+  // Trim to the last flight leg using onGround detection
+  const legTrimmed = trimToLastFlight(waypoints);
+
   const deduped: TrackWaypoint[] = [];
   let lastLng: number | null = null;
   let lastLat: number | null = null;
-  for (const p of waypoints) {
+  for (const p of legTrimmed) {
     if (lastLng !== null && lastLat !== null) {
-      if (p.longitude === lastLng && p.latitude === lastLat) continue;
+      // Skip exact duplicates and near-duplicates (< ~30m).
+      const dlat = (p.latitude ?? 0) - lastLat;
+      const dlng = (p.longitude ?? 0) - lastLng;
+      if (dlat * dlat + dlng * dlng < 0.0003 * 0.0003) continue;
     }
     deduped.push(p);
     lastLng = p.longitude;
@@ -248,19 +332,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  const now = Date.now();
-  const elapsed = now - lastRequestTime;
-  lastRequestTime = now;
-  if (elapsed < RATE_MS) {
-    return NextResponse.json(
-      { error: "Rate limited" },
-      {
-        status: 429,
-        headers: { "Cache-Control": "no-store", "Retry-After": "1" },
-      },
-    );
-  }
-
   const lastTwo = hex.slice(-2);
 
   const traceHeaders = (source: (typeof GLOBE_TRACE_SOURCES)[number]) => ({
@@ -271,33 +342,41 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   });
 
   for (const source of GLOBE_TRACE_SOURCES) {
-    try {
-      const fullUrl = `${source.baseUrl}/${lastTwo}/trace_full_${hex}.json`;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), TRACE_TIMEOUT_MS);
+    // Try trace_full first (complete flight history), then trace_recent
+    // as fallback (last ~few minutes, still useful for active flights).
+    const urlsToTry = [
+      `${source.baseUrl}/${lastTwo}/trace_full_${hex}.json`,
+      `${source.baseUrl}/${lastTwo}/trace_recent_${hex}.json`,
+    ];
 
-      const res = await fetch(fullUrl, {
-        signal: controller.signal,
-        headers: traceHeaders(source),
-      });
-      clearTimeout(timer);
+    for (const traceUrl of urlsToTry) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), TRACE_TIMEOUT_MS);
 
-      if (res.ok) {
-        // Skip non-JSON responses (CloudFlare challenges, maintenance pages)
-        const ct = res.headers.get("content-type") ?? "";
-        if (ct.includes("text/html") || ct.includes("text/xml")) continue;
+        const res = await fetch(traceUrl, {
+          signal: controller.signal,
+          headers: traceHeaders(source),
+        });
+        clearTimeout(timer);
 
-        const data = (await res.json()) as unknown;
-        const track = parseReadsbTrace(hex, data);
-        if (track && track.path.length >= 2) {
-          return NextResponse.json(
-            { track, source: source.name },
-            { headers: { "Cache-Control": "private, max-age=30" } },
-          );
+        if (res.ok) {
+          // Skip non-JSON responses (CloudFlare challenges, maintenance pages)
+          const ct = res.headers.get("content-type") ?? "";
+          if (ct.includes("text/html") || ct.includes("text/xml")) continue;
+
+          const data = (await res.json()) as unknown;
+          const track = parseReadsbTrace(hex, data);
+          if (track && track.path.length >= 2) {
+            return NextResponse.json(
+              { track, source: source.name },
+              { headers: { "Cache-Control": "private, max-age=30" } },
+            );
+          }
         }
+      } catch {
+        // Next URL / source
       }
-    } catch {
-      // Next source
     }
   }
 

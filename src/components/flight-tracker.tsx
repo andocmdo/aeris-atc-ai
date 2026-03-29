@@ -8,14 +8,20 @@ import {
   useRef,
   useSyncExternalStore,
 } from "react";
-import { AnimatePresence } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import dynamic from "next/dynamic";
+import { useTheme } from "next-themes";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { Map as MapView } from "@/components/map/map";
 import { CameraController } from "@/components/map/camera-controller";
 import { AirportLayer } from "@/components/map/airport-layer";
 import { AirspaceLayer } from "@/components/map/airspace-layer";
+import { WeatherRadarLayer } from "@/components/map/weather-radar-layer";
 import { FlightLayers } from "@/components/map/flight-layers";
+import {
+  MapStateTracker,
+  type MapViewState,
+} from "@/components/map/map-state-tracker";
 const FlightCard = dynamic(() =>
   import("@/components/ui/flight-card").then((mod) => mod.FlightCard),
 );
@@ -28,6 +34,9 @@ import { CameraControls } from "@/components/ui/camera-controls";
 import { StatusBar } from "@/components/ui/status-bar";
 import { MapAttribution } from "@/components/ui/map-attribution";
 import { AtcPlayerBar } from "@/components/ui/atc-panel";
+const AirportBoard = dynamic(() =>
+  import("@/components/ui/airport-board").then((mod) => mod.AirportBoard),
+);
 import { Brand, GitHubBadge } from "@/components/flight-tracker-brand";
 import { SettingsProvider, useSettings } from "@/hooks/use-settings";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
@@ -38,11 +47,12 @@ import { useMergedTrails } from "@/hooks/use-merged-trails";
 import { useFlightMonitors } from "@/hooks/use-flight-monitors";
 import { useAtcStream } from "@/hooks/use-atc-stream";
 import { useIsMobile } from "@/hooks/use-is-mobile";
+import { useAirportBoard } from "@/hooks/use-airport-board";
 import { MobileFlightToast } from "@/components/ui/mobile-flight-toast";
-import { toast } from "sonner";
 import type { MapStyle } from "@/lib/map-styles";
 import type { City } from "@/lib/cities";
 import type { FlightState } from "@/lib/opensky";
+
 import { fetchFlightByHex, fetchFlightByCallsign } from "@/lib/flight-api";
 import { formatCallsign } from "@/lib/flight-utils";
 import type { PickingInfo } from "@deck.gl/core";
@@ -103,6 +113,12 @@ function FlightTrackerInner() {
   const activeCity = cityOverride ?? hydratedCity;
   const mapStyle = styleOverride ?? hydratedStyle;
   const { settings, update } = useSettings();
+  const { setTheme } = useTheme();
+
+  // Sync document theme with current map style (dark/light)
+  useEffect(() => {
+    setTheme(mapStyle.dark ? "dark" : "light");
+  }, [mapStyle.dark, setTheme]);
 
   const setActiveCity = useCallback((city: City) => {
     setCityOverride(city);
@@ -110,6 +126,16 @@ function FlightTrackerInner() {
     setFpvIcao24(null);
     setFollowIcao24(null);
     syncCityToUrl(city);
+  }, []);
+
+  /** Called when user clicks an airport dot on the map — navigates AND opens the board. */
+  const handleAirportDotClick = useCallback((city: City) => {
+    setCityOverride(city);
+    setSelectedIcao24(null);
+    setFpvIcao24(null);
+    setFollowIcao24(null);
+    syncCityToUrl(city);
+    setSelectedAirportIata(city.iata);
   }, []);
 
   const setMapStyle = useCallback((style: MapStyle) => {
@@ -133,15 +159,7 @@ function FlightTrackerInner() {
     return m;
   }, [displayFlights]);
 
-  const selectedFlightForTrack = useMemo(() => {
-    if (!selectedIcao24) return null;
-    return displayFlightMap.get(selectedIcao24) ?? null;
-  }, [selectedIcao24, displayFlightMap]);
-
-  const shouldFetchSelectedTrack =
-    !!selectedIcao24 &&
-    !fpvIcao24 &&
-    !(selectedFlightForTrack?.onGround ?? false);
+  const shouldFetchSelectedTrack = !!selectedIcao24 && !fpvIcao24;
 
   const { track: selectedTrack, fetchedAtMs: selectedTrackFetchedAtMs } =
     useFlightTrack(selectedIcao24, {
@@ -160,6 +178,11 @@ function FlightTrackerInner() {
     if (!selectedIcao24) return null;
     return displayFlightMap.get(selectedIcao24) ?? null;
   }, [selectedIcao24, displayFlightMap]);
+
+  const selectedTrail = useMemo(() => {
+    if (!selectedIcao24) return null;
+    return mergedTrails.find((t) => t.icao24 === selectedIcao24) ?? null;
+  }, [selectedIcao24, mergedTrails]);
 
   const followFlight = useMemo(() => {
     if (!followIcao24) return null;
@@ -197,6 +220,39 @@ function FlightTrackerInner() {
 
   const fpvFlightOrCached = fpvFlight;
   const displayFlight = selectedFlight;
+
+  // ── Airport Board state ──────────────────────────────────────────────
+  const mapStateRef = useRef<MapViewState>({
+    zoom: 9.2,
+    center: { lat: 0, lng: 0 },
+  });
+  const [mapViewState, setMapViewState] = useState<MapViewState>({
+    zoom: 9.2,
+    center: { lat: 0, lng: 0 },
+  });
+  const [selectedAirportIata, setSelectedAirportIata] = useState<string | null>(
+    null,
+  );
+
+  const handleMapStateChange = useCallback((state: MapViewState) => {
+    setMapViewState(state);
+  }, []);
+
+  const airportBoard = useAirportBoard(
+    displayFlights,
+    mapViewState.center,
+    mapViewState.zoom,
+    activeCity.iata,
+    selectedAirportIata,
+  );
+
+  const handleAirportBoardSelect = useCallback((icao24: string) => {
+    setSelectedIcao24((prev) => (prev === icao24 ? null : icao24));
+  }, []);
+
+  const handleAirportBoardClose = useCallback(() => {
+    setSelectedAirportIata(null);
+  }, []);
 
   const [atcToggle, setAtcToggle] = useState(0);
   const handleToggleAtc = useCallback(() => {
@@ -370,74 +426,12 @@ function FlightTrackerInner() {
   });
 
   const isMobile = useIsMobile();
-  const mobileToastIdRef = useRef<string | number | null>(null);
 
-  // Stable close handler that both dismisses the toast and deselects the flight
-  const handleMobileToastClose = useCallback(() => {
-    if (mobileToastIdRef.current !== null) {
-      toast.dismiss(mobileToastIdRef.current);
-      mobileToastIdRef.current = null;
-    }
-    handleDeselectFlight();
-  }, [handleDeselectFlight]);
-
-  // Show/dismiss mobile flight toast
-  useEffect(() => {
-    // Dismiss when not applicable
-    if (!isMobile || fpvIcao24 || !displayFlight) {
-      if (mobileToastIdRef.current !== null) {
-        toast.dismiss(mobileToastIdRef.current);
-        mobileToastIdRef.current = null;
-      }
-      return;
-    }
-
-    // Use a stable ID based on the selected flight
-    const stableId = `mobile-flight-${displayFlight.icao24}`;
-
-    // If switching to a different flight, dismiss the old toast first
-    if (
-      mobileToastIdRef.current !== null &&
-      mobileToastIdRef.current !== stableId
-    ) {
-      toast.dismiss(mobileToastIdRef.current);
-    }
-
-    toast.custom(
-      () => (
-        <MobileFlightToast
-          flight={displayFlight}
-          onClose={handleMobileToastClose}
-          onToggleFpv={handleToggleFpv}
-          isFpvActive={fpvIcao24 === displayFlight.icao24}
-        />
-      ),
-      {
-        id: stableId,
-        duration: Infinity,
-        dismissible: false,
-      },
-    );
-    mobileToastIdRef.current = stableId;
-  }, [
-    isMobile,
-    displayFlight,
-    fpvIcao24,
-    handleMobileToastClose,
-    handleToggleFpv,
-  ]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (mobileToastIdRef.current !== null) {
-        toast.dismiss(mobileToastIdRef.current);
-      }
-    };
-  }, []);
+  // Whether to show the mobile bottom sheet flight card
+  const showMobileFlightCard = isMobile && !fpvIcao24 && !!displayFlight;
 
   return (
-    <main className="relative h-dvh w-screen overflow-hidden bg-black">
+    <main className="relative h-dvh w-screen overflow-hidden bg-background">
       <MapView
         mapStyle={mapStyle.style}
         terrainProfile={mapStyle.terrainProfile}
@@ -450,15 +444,23 @@ function FlightTrackerInner() {
           fpvFlight={fpvFlightOrCached}
           fpvPositionRef={fpvPositionRef}
         />
+        <MapStateTracker
+          stateRef={mapStateRef}
+          onChange={handleMapStateChange}
+        />
         <AirportLayer
           activeCity={activeCity}
-          onSelectAirport={setActiveCity}
+          onSelectAirport={handleAirportDotClick}
           isDark={mapStyle.dark}
         />
         <AirspaceLayer
           visible={settings.showAirspace}
           opacity={settings.airspaceOpacity}
           showHotspots={settings.showAirspaceHotspots}
+        />
+        <WeatherRadarLayer
+          visible={settings.showWeatherRadar}
+          opacity={settings.weatherRadarOpacity}
         />
         <FlightLayers
           flights={displayFlights}
@@ -476,10 +478,7 @@ function FlightTrackerInner() {
         />
       </MapView>
 
-      <div
-        data-map-theme={mapStyle.dark ? "dark" : "light"}
-        className="pointer-events-none absolute inset-0 z-10"
-      >
+      <div className="pointer-events-none absolute inset-0 z-10">
         {!fpvIcao24 && (
           <div className="pointer-events-auto absolute left-3 top-3 flex items-center gap-3 sm:left-4 sm:top-4">
             <Brand isDark={mapStyle.dark} />
@@ -490,6 +489,7 @@ function FlightTrackerInner() {
           <div className="pointer-events-auto absolute left-3 top-14 sm:left-4 sm:top-16">
             <FlightCard
               flight={displayFlight}
+              trail={selectedTrail}
               onClose={handleDeselectFlight}
               onToggleFpv={handleToggleFpv}
               isFpvActive={
@@ -561,6 +561,56 @@ function FlightTrackerInner() {
             </div>
           </div>
         )}
+
+        {/* Airport Departure/Arrival Board — hide on mobile when flight card is open */}
+        {!fpvIcao24 && !showMobileFlightCard && (
+          <AnimatePresence>
+            {airportBoard.isActive && (
+              <div className="pointer-events-auto absolute bottom-[env(safe-area-inset-bottom,0px)] left-1/2 mb-14 -translate-x-1/2 sm:mb-16">
+                <AirportBoard
+                  data={airportBoard}
+                  onSelectFlight={handleAirportBoardSelect}
+                  selectedIcao24={selectedIcao24}
+                  onClose={handleAirportBoardClose}
+                />
+              </div>
+            )}
+          </AnimatePresence>
+        )}
+
+        {/* Mobile flight card — native bottom sheet with drag-to-dismiss */}
+        <AnimatePresence>
+          {showMobileFlightCard && displayFlight && (
+            <motion.div
+              key={displayFlight.icao24}
+              className="pointer-events-auto fixed inset-x-0 bottom-0 z-50 px-2 pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))]"
+              initial={{ y: "100%", opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: "100%", opacity: 0 }}
+              transition={{
+                type: "spring",
+                stiffness: 400,
+                damping: 35,
+                mass: 0.8,
+              }}
+              drag="y"
+              dragConstraints={{ top: 0, bottom: 0 }}
+              dragElastic={{ top: 0, bottom: 0.6 }}
+              onDragEnd={(_, info) => {
+                if (info.offset.y > 80 || info.velocity.y > 300) {
+                  handleDeselectFlight();
+                }
+              }}
+            >
+              <MobileFlightToast
+                flight={displayFlight}
+                onClose={handleDeselectFlight}
+                onToggleFpv={handleToggleFpv}
+                isFpvActive={fpvIcao24 === displayFlight.icao24}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <AnimatePresence>

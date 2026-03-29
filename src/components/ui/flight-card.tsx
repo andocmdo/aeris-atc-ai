@@ -14,11 +14,15 @@ import {
   Building2,
   Eye,
   ChevronRight,
+  Shield,
+  AlertTriangle,
 } from "lucide-react";
 import { useAircraftPhotos } from "@/hooks/use-aircraft-photos";
 import { AircraftPhotos } from "@/components/ui/aircraft-photos";
 import { HeroBanner } from "@/components/ui/hero-banner";
 import type { FlightState } from "@/lib/opensky";
+import { VerticalProfile } from "@/components/ui/vertical-profile";
+import type { TrailEntry } from "@/hooks/use-trail-history";
 import {
   metersToFeet,
   msToKnots,
@@ -37,6 +41,7 @@ import {
 
 type FlightCardProps = {
   flight: FlightState | null;
+  trail?: TrailEntry | null;
   onClose: () => void;
   onToggleFpv?: (icao24: string) => void;
   isFpvActive?: boolean;
@@ -44,6 +49,7 @@ type FlightCardProps = {
 
 export function FlightCard({
   flight,
+  trail,
   onClose,
   onToggleFpv,
   isFpvActive = false,
@@ -53,7 +59,7 @@ export function FlightCard({
   const company =
     airline ?? (flight ? `${flight.originCountry} operator` : null);
   const model = flight ? aircraftTypeHint(flight.category) : null;
-  const logoCandidates = airlineLogoCandidates(airline);
+  const logoCandidates = airlineLogoCandidates(airline, flight?.callsign);
   const heading = flight?.trueTrack ?? null;
   const cardinal = heading !== null ? headingToCardinal(heading) : null;
   const canEnterFpv =
@@ -116,14 +122,14 @@ export function FlightCard({
           aria-label="Selected flight details"
           aria-live="polite"
         >
-          <div className="overflow-hidden rounded-2xl border border-white/8 bg-black/60 shadow-2xl shadow-black/40 backdrop-blur-2xl">
+          <div className="overflow-hidden rounded-2xl border border-foreground/8 bg-background/60 shadow-2xl shadow-background/40 backdrop-blur-2xl">
             <HeroBanner photo={heroPhoto} loading={photosLoading} />
 
             <div className="p-4">
               <div className="flex items-center gap-3.5">
-                <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl border border-white/14 bg-white/10 shadow-lg shadow-black/25">
+                <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl border border-foreground/14 bg-foreground/10 shadow-lg shadow-background/25">
                   {showLogo ? (
-                    <span className="relative flex h-18 w-18 items-center justify-center overflow-hidden rounded-xl border border-black/10 bg-white/95 p-3.5 shadow-sm">
+                    <span className="relative flex h-18 w-18 items-center justify-center overflow-hidden rounded-xl border border-background/10 bg-white/95 p-3.5 shadow-sm">
                       {!logoLoaded && (
                         <span
                           aria-hidden="true"
@@ -163,9 +169,9 @@ export function FlightCard({
                       />
                     </span>
                   ) : (
-                    <span className="relative flex h-18 w-18 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-white/95 p-3.5 shadow-sm">
+                    <span className="relative flex h-18 w-18 items-center justify-center overflow-hidden rounded-xl border border-foreground/10 bg-white/95 p-3.5 shadow-sm">
                       {genericLogoFailed ? (
-                        <span className="text-[22px] font-semibold text-black/25">
+                        <span className="text-[22px] font-semibold text-background/25">
                           —
                         </span>
                       ) : (
@@ -183,10 +189,10 @@ export function FlightCard({
                   )}
                 </div>
                 <div>
-                  <p className="text-base font-bold leading-tight text-white">
+                  <p className="text-base font-bold leading-tight text-foreground">
                     {formatCallsign(flight.callsign)}
                   </p>
-                  <p className="mt-0.5 text-[11px] font-medium tracking-widest text-white/35 uppercase">
+                  <p className="mt-0.5 text-[11px] font-medium tracking-widest text-foreground/35 uppercase">
                     {flight.icao24}
                     {flightNum ? ` · #${flightNum}` : ""}
                   </p>
@@ -195,17 +201,36 @@ export function FlightCard({
 
               {company && (
                 <div className="mt-2.5 flex items-center gap-1.5">
-                  <Building2 className="h-3 w-3 text-white/25" />
-                  <p className="text-xs font-medium text-white/50">
+                  <Building2 className="h-3 w-3 text-foreground/25" />
+                  <p className="text-xs font-medium text-foreground/50">
                     {company}
                     {model ? (
-                      <span className="text-white/30"> · {model}</span>
+                      <span className="text-foreground/30"> · {model}</span>
                     ) : null}
                   </p>
                 </div>
               )}
 
-              <div className="mt-3 h-px bg-linear-to-r from-transparent via-white/6 to-transparent" />
+              {/* Military / Emergency badges */}
+              {(isMilitary(flight.dbFlags) ||
+                isEmergencyStatus(flight.emergencyStatus)) && (
+                <div className="mt-2 flex items-center gap-1.5">
+                  {isMilitary(flight.dbFlags) && (
+                    <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-amber-400 uppercase ring-1 ring-amber-400/20">
+                      <Shield className="h-2.5 w-2.5" />
+                      MIL
+                    </span>
+                  )}
+                  {isEmergencyStatus(flight.emergencyStatus) && (
+                    <span className="inline-flex animate-pulse items-center gap-1 rounded bg-red-500/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-red-400 uppercase ring-1 ring-red-400/25">
+                      <AlertTriangle className="h-2.5 w-2.5" />
+                      {flight.emergencyStatus?.toUpperCase()}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-3 h-px bg-linear-to-r from-transparent via-foreground/6 to-transparent" />
 
               <div className="mt-3 grid grid-cols-2 gap-3">
                 <Metric
@@ -239,19 +264,19 @@ export function FlightCard({
                 />
               </div>
 
-              <div className="mt-3 h-px bg-linear-to-r from-transparent via-white/6 to-transparent" />
+              <div className="mt-3 h-px bg-linear-to-r from-transparent via-foreground/6 to-transparent" />
 
               <div className="mt-2.5 flex flex-col gap-1.5">
                 <div className="flex items-center gap-1.5">
-                  <Globe className="h-3 w-3 text-white/25" />
-                  <p className="text-[11px] text-white/40">
+                  <Globe className="h-3 w-3 text-foreground/25" />
+                  <p className="text-[11px] text-foreground/40">
                     {flight.originCountry}
                   </p>
                 </div>
                 {cardinal && (
                   <div className="flex items-center gap-1.5">
                     <Navigation
-                      className="h-3 w-3 text-white/25"
+                      className="h-3 w-3 text-foreground/25"
                       style={{
                         transform:
                           heading !== null && Number.isFinite(heading)
@@ -259,13 +284,13 @@ export function FlightCard({
                             : undefined,
                       }}
                     />
-                    <p className="text-[11px] text-white/40">
+                    <p className="text-[11px] text-foreground/40">
                       Heading {cardinal}
                       {flight.latitude !== null &&
                         flight.longitude !== null &&
                         Number.isFinite(flight.latitude) &&
                         Number.isFinite(flight.longitude) && (
-                          <span className="text-white/20">
+                          <span className="text-foreground/20">
                             {" "}
                             · {Math.abs(flight.latitude).toFixed(2)}°
                             {flight.latitude >= 0 ? "N" : "S"},{" "}
@@ -282,7 +307,7 @@ export function FlightCard({
                       className={`h-3 w-3 text-center text-[8px] font-bold leading-3 ${
                         isEmergencySquawk(flight.squawk)
                           ? "text-red-400"
-                          : "text-white/25"
+                          : "text-foreground/25"
                       }`}
                     >
                       SQ
@@ -291,7 +316,7 @@ export function FlightCard({
                       className={`font-mono text-[11px] tabular-nums ${
                         isEmergencySquawk(flight.squawk)
                           ? "text-red-400"
-                          : "text-white/40"
+                          : "text-foreground/40"
                       }`}
                     >
                       {flight.squawk}
@@ -307,7 +332,7 @@ export function FlightCard({
 
               {onToggleFpv && (
                 <div className="mt-3">
-                  <div className="h-px bg-linear-to-r from-transparent via-white/6 to-transparent" />
+                  <div className="h-px bg-linear-to-r from-transparent via-foreground/6 to-transparent" />
                   <button
                     type="button"
                     onClick={() =>
@@ -339,17 +364,17 @@ export function FlightCard({
                     }
                   >
                     <Eye
-                      className={`h-3 w-3 ${isFpvActive ? "text-emerald-400" : "text-white/25"}`}
+                      className={`h-3 w-3 ${isFpvActive ? "text-emerald-400" : "text-foreground/25"}`}
                     />
                     <span
-                      className={`text-[11px] font-medium tracking-wide uppercase ${isFpvActive ? "text-emerald-400/70" : "text-white/30"}`}
+                      className={`text-[11px] font-medium tracking-wide uppercase ${isFpvActive ? "text-emerald-400/70" : "text-foreground/30"}`}
                     >
                       {isFpvActive
                         ? "Exit First Person View"
                         : "First Person View"}
                     </span>
                     <ChevronRight
-                      className={`ml-auto h-2.5 w-2.5 ${isFpvActive ? "text-emerald-400/40" : "text-white/20"}`}
+                      className={`ml-auto h-2.5 w-2.5 ${isFpvActive ? "text-emerald-400/40" : "text-foreground/20"}`}
                     />
                   </button>
                 </div>
@@ -362,16 +387,23 @@ export function FlightCard({
                 error={photosError}
               />
 
+              {trail && trail.path.length >= 3 && (
+                <VerticalProfile
+                  trail={trail}
+                  navAltitudeMcp={flight.navAltitudeMcp}
+                />
+              )}
+
               <div className="mt-3">
-                <div className="h-px bg-linear-to-r from-transparent via-white/6 to-transparent" />
+                <div className="h-px bg-linear-to-r from-transparent via-foreground/6 to-transparent" />
                 <button
                   type="button"
                   onClick={onClose}
                   className="mt-2 flex w-full items-center gap-1.5 text-left transition-colors hover:opacity-70"
                   aria-label="Deselect flight"
                 >
-                  <X className="h-3 w-3 text-white/25" />
-                  <span className="text-[11px] font-medium tracking-wide text-white/30 uppercase">
+                  <X className="h-3 w-3 text-foreground/25" />
+                  <span className="text-[11px] font-medium tracking-wide text-foreground/30 uppercase">
                     Close
                   </span>
                 </button>
@@ -404,6 +436,14 @@ function squawkLabel(squawk: string): string {
   }
 }
 
+function isMilitary(dbFlags?: number | null): boolean {
+  return ((dbFlags ?? 0) & 1) !== 0;
+}
+
+function isEmergencyStatus(status?: string | null): boolean {
+  return !!status && status !== "none";
+}
+
 function Metric({
   icon,
   label,
@@ -415,13 +455,13 @@ function Metric({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-1.5 text-white/25">
+      <div className="flex items-center gap-1.5 text-foreground/25">
         {icon}
         <span className="text-[10px] font-medium tracking-widest uppercase">
           {label}
         </span>
       </div>
-      <p className="text-sm font-semibold tabular-nums text-white/90">
+      <p className="text-sm font-semibold tabular-nums text-foreground/90">
         {value}
       </p>
     </div>

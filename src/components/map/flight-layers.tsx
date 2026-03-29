@@ -32,6 +32,7 @@ import {
 import {
   categorySizeMultiplier,
   tintAircraftColor,
+  applySpecialTint,
   AIRCRAFT_ICON_MAPPING,
   getHaloUrl,
   getRingUrl,
@@ -691,7 +692,7 @@ export function FlightLayers({
 
         // Selection pulse layers (halo + rings) — skip entirely when
         // nothing is selected and no fade-out is in progress. Saves
-        // constructing 8 IconLayer objects + deck.gl diffing per frame.
+        // constructing 4 IconLayer objects + deck.gl diffing per frame.
         if (selectedIcao24Ref.current || prevSelectedRef.current) {
           const pulseResult = buildSelectionPulseLayers({
             selectionChangeTime: selectionChangeTimeRef.current,
@@ -763,7 +764,8 @@ export function FlightLayers({
                 const base = altColors
                   ? altitudeToColor(d.baroAltitude)
                   : DEFAULT_COLOR;
-                return tintAircraftColor(base, d.category);
+                const catColor = tintAircraftColor(base, d.category);
+                return applySpecialTint(catColor, d.dbFlags, d.emergencyStatus);
               },
               getAngle: (d) =>
                 360 - (Number.isFinite(d.trueTrack) ? d.trueTrack! : 0),
