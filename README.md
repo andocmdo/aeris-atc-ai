@@ -6,6 +6,8 @@ Aeris renders live air traffic over the world's busiest airspaces on a premium d
 
 [Live Demo](https://aeris.edbn.me)
 
+<img width="1280" height="832" alt="aeris - 1" src="https://github.com/user-attachments/assets/3fe48868-f8cd-48af-81d6-395c1fce8a2a" />
+
 <img width="2559" height="1380" alt="Screenshot 2026-02-15 112222" src="https://github.com/user-attachments/assets/9d1f50ed-be4e-4ef5-95ac-257e9129f8c8" />
 
 <img width="2555" height="1387" alt="image" src="https://github.com/user-attachments/assets/a1d2f673-dfdc-4c82-8ee2-7629d91ad94b" />
