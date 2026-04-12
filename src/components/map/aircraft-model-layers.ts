@@ -16,22 +16,24 @@
 // ────────────────────────────────────────────────────────────────────────
 
 import { ScenegraphLayer } from "@deck.gl/mesh-layers";
+import type { AltitudeDisplayMode } from "@/lib/altitude-display-mode";
 import type { FlightState } from "@/lib/opensky";
 import { altitudeToColor, altitudeToElevation } from "@/lib/flight-utils";
 import { tintAircraftColor, applySpecialTint } from "./aircraft-appearance";
 import { type PickingInfo } from "@deck.gl/core";
-import {
-  AIRCRAFT_MIN_PIXELS,
-  AIRCRAFT_MAX_PIXELS,
-  BASE_AIRCRAFT_SIZE,
-} from "./flight-layer-constants";
+import { AIRCRAFT_MIN_PIXELS } from "./flight-layer-constants";
 import {
   ALL_MODEL_KEYS,
   bucketFlightsByModel,
   modelNormScale,
   modelUrl,
-  modelYawOffset,
 } from "./aircraft-model-mapping";
+import { getAircraftModelCalibration } from "./aircraft-model-calibration";
+import {
+  getAircraftScenegraphSizeScale,
+  getModelMaxPixels,
+} from "./aircraft-model-size";
+import { offsetPositionByTrack } from "./flight-math";
 
 // Stable empty array — same reference every frame so deck.gl skips buffer work
 const EMPTY_DATA: FlightState[] = [];
@@ -40,7 +42,7 @@ const EMPTY_DATA: FlightState[] = [];
 // Models not seen for MODEL_DEACTIVATE_MS are omitted from the layer array
 // entirely, avoiding ScenegraphLayer constructor and deck.gl diffing overhead.
 const modelLastUsed = new Map<string, number>();
-const MODEL_DEACTIVATE_MS = 5_000; // 5 second grace period (covers 1 poll cycle)
+const MODEL_DEACTIVATE_MS = 15_000; // 15 second grace period (covers 3+ poll cycles)
 const MODEL_LAST_USED_MAX = 50; // bound the Map to prevent unbounded growth
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -57,6 +59,8 @@ export interface AircraftLayerParams {
   layersVisible: boolean;
   globeFade: number;
   elevScale: number;
+  currentZoom: number;
+  altitudeDisplayMode: AltitudeDisplayMode;
   altColors: boolean;
   defaultColor: [number, number, number, number];
   pitchByIcao: Map<string, number>;
@@ -90,6 +94,8 @@ export function buildAircraftModelLayers(
     layersVisible,
     globeFade,
     elevScale,
+    currentZoom,
+    altitudeDisplayMode,
     altColors,
     defaultColor,
     pitchByIcao,
@@ -124,8 +130,8 @@ export function buildAircraftModelLayers(
     const hasData = flights.length > 0;
 
     // Pre-compute the yaw offset once per layer (not per-flight per-frame)
-    const yawOff = modelYawOffset(modelKey);
-    const normScale = modelNormScale(modelKey);
+    const meshNormalize = modelNormScale(modelKey);
+    const calibration = getAircraftModelCalibration(modelKey);
 
     return new ScenegraphLayer<FlightState>({
       id: `flight-aircraft-${modelKey}`,
@@ -135,10 +141,20 @@ export function buildAircraftModelLayers(
       getPosition: (d) => {
         const interp = interpolatedMap.get(d.icao24);
         const src = interp ?? d;
+        const track = Number.isFinite(src.trueTrack) ? src.trueTrack! : 0;
+        const shifted =
+          src.longitude != null && src.latitude != null
+            ? offsetPositionByTrack(
+                { lng: src.longitude, lat: src.latitude },
+                track,
+                -calibration.tailAnchorMeters,
+              )
+            : { lng: 0, lat: 0 };
         return [
-          src.longitude ?? 0,
-          src.latitude ?? 0,
-          altitudeToElevation(src.baroAltitude) * elevScale,
+          shifted.lng,
+          shifted.lat,
+          altitudeToElevation(src.baroAltitude, altitudeDisplayMode) *
+            elevScale,
         ];
       },
       getOrientation: (d) => {
@@ -147,8 +163,9 @@ export function buildAircraftModelLayers(
         const pitch = pitchByIcao.get(d.icao24) ?? 0;
         const bank = bankByIcao.get(d.icao24) ?? 0;
         const yaw =
-          yawOff - (Number.isFinite(src.trueTrack) ? src.trueTrack! : 0);
-        return [pitch, yaw, 90 + bank];
+          calibration.yawOffset -
+          (Number.isFinite(src.trueTrack) ? src.trueTrack! : 0);
+        return [pitch, yaw, calibration.baseRoll + bank];
       },
       getColor: (d) => {
         const base = altColors ? altitudeToColor(d.baroAltitude) : defaultColor;
@@ -157,16 +174,19 @@ export function buildAircraftModelLayers(
       },
       scenegraph: modelUrl(modelKey),
       getScale: () => {
-        return [normScale, normScale, normScale];
+        return [meshNormalize, meshNormalize, meshNormalize];
       },
-      sizeScale: BASE_AIRCRAFT_SIZE,
+      sizeScale: getAircraftScenegraphSizeScale(
+        calibration.displayScale,
+        currentZoom,
+      ),
       updateTriggers: {
-        getPosition: [frameCounter, elevScale],
+        getPosition: [frameCounter, elevScale, altitudeDisplayMode],
         getOrientation: frameCounter,
         getColor: [dataVersion, altColors],
       },
       sizeMinPixels: AIRCRAFT_MIN_PIXELS,
-      sizeMaxPixels: AIRCRAFT_MAX_PIXELS,
+      sizeMaxPixels: getModelMaxPixels(modelKey),
       _lighting: "pbr",
       pickable: hasData,
       onHover: handleHover,

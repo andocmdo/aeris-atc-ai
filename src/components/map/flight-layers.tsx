@@ -24,13 +24,14 @@ import {
   AIRCRAFT_PICK_RADIUS_PX,
   GLOBE_FADE_ZOOM_FLOOR,
   GLOBE_FADE_ZOOM_CEIL,
+  BASE_AIRCRAFT_SIZE,
   LOD_3D_ZOOM_IN,
   LOD_3D_ZOOM_OUT,
   type FlightLayerProps,
 } from "./flight-layer-constants";
 
 import {
-  categorySizeMultiplier,
+  aircraftSizeMultiplier,
   tintAircraftColor,
   applySpecialTint,
   AIRCRAFT_ICON_MAPPING,
@@ -39,25 +40,28 @@ import {
   getAircraftAtlasUrl,
 } from "./aircraft-appearance";
 
+import { lerpAngle, smoothStep } from "./flight-math";
+
 import {
-  lerpAngle,
-  smoothStep,
   computePitchByIcao,
   computeBankByIcao,
   computeInterpolatedFlights,
   updateInterpolatedInPlace,
-} from "./flight-animation-helpers";
+} from "./flight-interpolation";
 
 import { buildTrailLayers } from "./flight-layer-builders";
 import { buildSelectionPulseLayers } from "./flight-layer-builders";
 import { buildAircraftModelLayers } from "./aircraft-model-layers";
 import { preloadAllModels } from "./aircraft-model-mapping";
+import { trailStore } from "@/lib/trails/store/trail-store";
+import { getZoomAdjustedElevationScale } from "./altitude-projection";
 import { altitudeToColor, altitudeToElevation } from "@/lib/flight-utils";
 import { useGlobeDots } from "./use-globe-dots";
 
 export function FlightLayers({
   flights,
   trails,
+  selectedEnvelope = null,
   onClick,
   selectedIcao24,
   showTrails,
@@ -65,6 +69,7 @@ export function FlightLayers({
   trailDistance,
   showShadows,
   showAltitudeColors,
+  altitudeDisplayMode,
   globeMode = false,
   fpvIcao24 = null,
   fpvPositionRef,
@@ -125,12 +130,14 @@ export function FlightLayers({
 
   const flightsRef = useRef(flights);
   const trailsRef = useRef(trails);
+  const selectedEnvelopeRef = useRef(selectedEnvelope);
   const onClickRef = useRef(onClick);
   const showTrailsRef = useRef(showTrails);
   const trailThicknessRef = useRef(trailThickness);
   const trailDistanceRef = useRef(trailDistance);
   const showShadowsRef = useRef(showShadows);
   const showAltColorsRef = useRef(showAltitudeColors);
+  const altitudeDisplayModeRef = useRef(altitudeDisplayMode);
   const globeModeRef = useRef(globeMode);
   const selectedIcao24Ref = useRef(selectedIcao24);
   const fpvIcao24Ref = useRef(fpvIcao24);
@@ -157,11 +164,13 @@ export function FlightLayers({
     updateGlobeDotsRef.current = updateGlobeDots;
     flightsRef.current = flights;
     trailsRef.current = trails;
+    selectedEnvelopeRef.current = selectedEnvelope;
     showTrailsRef.current = showTrails;
     trailThicknessRef.current = trailThickness;
     trailDistanceRef.current = trailDistance;
     showShadowsRef.current = showShadows;
     showAltColorsRef.current = showAltitudeColors;
+    altitudeDisplayModeRef.current = altitudeDisplayMode;
     fpvIcao24Ref.current = fpvIcao24;
     fpvPosRef.current = fpvPositionRef;
     onClickRef.current = onClick;
@@ -175,12 +184,14 @@ export function FlightLayers({
     updateGlobeDots,
     flights,
     trails,
+    selectedEnvelope,
     onClick,
     showTrails,
     trailThickness,
     trailDistance,
     showShadows,
     showAltitudeColors,
+    altitudeDisplayMode,
     globeMode,
     selectedIcao24,
     fpvIcao24,
@@ -474,6 +485,17 @@ export function FlightLayers({
         animDurationRef.current = DEFAULT_ANIM_DURATION_MS;
         lastFlightsForInterpRef.current = null;
         resumeSnapRef.current = true;
+
+        // Invalidate trail render caches so the next frame recomputes
+        // geometry from the preserved trail data (not stale cached paths).
+        trailBasePathCacheRef.current.clear();
+        trailPathCacheRef.current.clear();
+        trailColorCacheRef.current.clear();
+        visibleTrailCacheRef.current.clear();
+
+        // Signal the trail store that we're back — preserves existing
+        // trails but resets bootstrap counter so gaps fill quickly.
+        trailStore.handleVisibilityResume();
       }
     }
     document.addEventListener("visibilitychange", onVisibilityResume);
@@ -628,15 +650,12 @@ export function FlightLayers({
 
         const layers = [];
 
-        // Zoom-dependent elevation scale to prevent absurd altitude spikes
-        // at globe zoom levels. Full exaggeration at city zoom (>8).
-        // Computed once per frame and passed to all builders.
-        const elevScale =
-          currentZoom < 5
-            ? 0.15 + (currentZoom / 5) * 0.35
-            : currentZoom < 8
-              ? 0.5 + ((currentZoom - 5) / 3) * 0.5
-              : 1.0;
+        // Tie the height ramp to the actual flight-layer visibility window so
+        // aircraft and trails do not appear overly flattened as they fade in.
+        const elevScale = getZoomAdjustedElevationScale(
+          currentZoom,
+          altitudeDisplayModeRef.current,
+        );
 
         // Shadow layer — always included, toggled via `visible` to retain WebGL state
         layers.push(
@@ -648,7 +667,9 @@ export function FlightLayers({
             opacity: globeFade,
             getPosition: (d) => [d.longitude!, d.latitude!, 0],
             getIcon: () => "aircraft",
-            getSize: (d) => 20 * categorySizeMultiplier(d.category),
+            getSize: (d) =>
+              BASE_AIRCRAFT_SIZE *
+              aircraftSizeMultiplier(d.typeCode, d.category),
             getColor: () => [0, 0, 0, 60],
             getAngle: (d) =>
               360 - (Number.isFinite(d.trueTrack) ? d.trueTrack! : 0),
@@ -666,14 +687,17 @@ export function FlightLayers({
 
         // Trail layer — always included, toggled via `visible` to retain WebGL state
         layers.push(
-          buildTrailLayers({
+          ...buildTrailLayers({
             interpolated,
             interpolatedMap: interpolatedMapRef.current,
             currentTrails,
             trailMap: trailMapRef.current,
+            selectedIcao24: selectedIcao24Ref.current,
+            selectedEnvelope: selectedEnvelopeRef.current,
             trailDistance: trailDistanceRef.current,
             trailThickness: trailThicknessRef.current,
             altColors,
+            altitudeDisplayMode: altitudeDisplayModeRef.current,
             defaultColor: DEFAULT_COLOR,
             elapsed,
             visualFrame: visualFrameRef.current,
@@ -704,6 +728,7 @@ export function FlightLayers({
             globeFade,
             currentZoom,
             elevScale,
+            altitudeDisplayMode: altitudeDisplayModeRef.current,
             haloUrl,
             ringUrl,
             layersVisible,
@@ -736,6 +761,8 @@ export function FlightLayers({
               layersVisible,
               globeFade,
               elevScale,
+              currentZoom,
+              altitudeDisplayMode: altitudeDisplayModeRef.current,
               altColors,
               defaultColor: DEFAULT_COLOR,
               pitchByIcao,
@@ -756,10 +783,15 @@ export function FlightLayers({
               getPosition: (d) => [
                 d.longitude!,
                 d.latitude!,
-                altitudeToElevation(d.baroAltitude) * elevScale,
+                altitudeToElevation(
+                  d.baroAltitude,
+                  altitudeDisplayModeRef.current,
+                ) * elevScale,
               ],
               getIcon: () => "aircraft",
-              getSize: (d) => 20 * categorySizeMultiplier(d.category),
+              getSize: (d) =>
+                BASE_AIRCRAFT_SIZE *
+                aircraftSizeMultiplier(d.typeCode, d.category),
               getColor: (d) => {
                 const base = altColors
                   ? altitudeToColor(d.baroAltitude)
@@ -779,7 +811,11 @@ export function FlightLayers({
               autoHighlight: true,
               highlightColor: [255, 255, 255, 80],
               updateTriggers: {
-                getPosition: [visualFrameRef.current, elevScale],
+                getPosition: [
+                  visualFrameRef.current,
+                  elevScale,
+                  altitudeDisplayModeRef.current,
+                ],
                 getAngle: visualFrameRef.current,
                 getColor: [dataVersionRef.current, altColors],
               },

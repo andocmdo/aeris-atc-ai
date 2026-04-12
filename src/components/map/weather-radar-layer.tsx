@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
+import type maplibregl from "maplibre-gl";
 import { useMap } from "./map";
 
 const RAINVIEWER_API = "https://api.rainviewer.com/public/weather-maps.json";
@@ -28,6 +29,38 @@ type WeatherRadarLayerProps = {
   opacity: number;
 };
 
+/** Add the radar raster source and layer to the map. */
+function addSourceAndLayer(
+  map: maplibregl.Map,
+  tileUrl: string,
+  visible: boolean,
+  opacity: number,
+) {
+  map.addSource(SOURCE_ID, {
+    type: "raster",
+    tiles: [tileUrl],
+    tileSize: 256,
+    maxzoom: RAINVIEWER_MAX_ZOOM,
+    attribution: '© <a href="https://www.rainviewer.com/">RainViewer</a>',
+  });
+
+  const layers = map.getStyle()?.layers ?? [];
+  const firstSymbol = layers.find((l) => l.type === "symbol");
+
+  map.addLayer(
+    {
+      id: LAYER_ID,
+      type: "raster",
+      source: SOURCE_ID,
+      paint: {
+        "raster-opacity": visible ? opacity : 0,
+        "raster-fade-duration": 300,
+      },
+    },
+    firstSymbol?.id,
+  );
+}
+
 export function WeatherRadarLayer({
   visible,
   opacity,
@@ -35,21 +68,25 @@ export function WeatherRadarLayer({
   const { map, isLoaded } = useMap();
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const currentTimeRef = useRef<number | null>(null);
-  const visibleRef = useRef(visible);
-  const opacityRef = useRef(opacity);
-
-  // Keep refs current without recreating callbacks
-  visibleRef.current = visible;
-  opacityRef.current = opacity;
+  const abortRef = useRef<AbortController | null>(null);
 
   const updateRadarTiles = useCallback(async () => {
     if (!map) return;
+
+    // Abort any previous in-flight fetch
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
-      const res = await fetch(RAINVIEWER_API);
+      const res = await fetch(RAINVIEWER_API, { signal: controller.signal });
       if (!res.ok) return;
       const data: RainViewerResponse = await res.json();
       const frames = data.radar?.past;
       if (!frames || frames.length === 0) return;
+
+      // Bail if aborted while parsing (component unmounted)
+      if (controller.signal.aborted) return;
 
       const latest = frames[frames.length - 1];
 
@@ -63,36 +100,24 @@ export function WeatherRadarLayer({
       const source = map.getSource(SOURCE_ID);
       if (source && "setTiles" in source) {
         (source as { setTiles: (tiles: string[]) => void }).setTiles([tileUrl]);
-      } else if (!source) {
-        map.addSource(SOURCE_ID, {
-          type: "raster",
-          tiles: [tileUrl],
-          tileSize: 256,
-          maxzoom: RAINVIEWER_MAX_ZOOM,
-          attribution: '© <a href="https://www.rainviewer.com/">RainViewer</a>',
-        });
-
-        // Insert below the first symbol layer so labels remain readable
-        const layers = map.getStyle()?.layers ?? [];
-        const firstSymbol = layers.find((l) => l.type === "symbol");
-
-        map.addLayer(
-          {
-            id: LAYER_ID,
-            type: "raster",
-            source: SOURCE_ID,
-            paint: {
-              "raster-opacity": visibleRef.current ? opacityRef.current : 0,
-              "raster-fade-duration": 300,
-            },
-          },
-          firstSymbol?.id,
-        );
+      } else if (source) {
+        // Source exists but lacks setTiles (unexpected type) — remove and re-add
+        try {
+          if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
+          map.removeSource(SOURCE_ID);
+        } catch {
+          /* already removed */
+        }
+        // Fall through to re-create below
+        addSourceAndLayer(map, tileUrl, visible, opacity);
+      } else {
+        addSourceAndLayer(map, tileUrl, visible, opacity);
       }
-    } catch {
-      // Network failure — silently ignore, will retry next interval
+    } catch (err) {
+      // Ignore AbortError (expected on cleanup) and network failures (retry next interval)
+      if (err instanceof DOMException && err.name === "AbortError") return;
     }
-  }, [map]);
+  }, [map, opacity, visible]);
 
   // Initial fetch + periodic refresh
   useEffect(() => {
@@ -106,6 +131,7 @@ export function WeatherRadarLayer({
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
+      abortRef.current?.abort();
     };
   }, [map, isLoaded, visible, updateRadarTiles]);
 
@@ -136,33 +162,9 @@ export function WeatherRadarLayer({
 
     const onStyleLoad = () => {
       // Only re-add if we had a valid timestamp and source was removed by style swap
-      if (
-        currentTimeRef.current &&
-        !map.getSource(SOURCE_ID) &&
-        visibleRef.current
-      ) {
+      if (currentTimeRef.current && !map.getSource(SOURCE_ID) && visible) {
         const tileUrl = proxyTileUrl(currentTimeRef.current);
-        map.addSource(SOURCE_ID, {
-          type: "raster",
-          tiles: [tileUrl],
-          tileSize: 256,
-          maxzoom: RAINVIEWER_MAX_ZOOM,
-          attribution: '© <a href="https://www.rainviewer.com/">RainViewer</a>',
-        });
-        const layers = map.getStyle()?.layers ?? [];
-        const firstSymbol = layers.find((l) => l.type === "symbol");
-        map.addLayer(
-          {
-            id: LAYER_ID,
-            type: "raster",
-            source: SOURCE_ID,
-            paint: {
-              "raster-opacity": opacityRef.current,
-              "raster-fade-duration": 300,
-            },
-          },
-          firstSymbol?.id,
-        );
+        addSourceAndLayer(map, tileUrl, visible, opacity);
       }
     };
 
@@ -170,7 +172,7 @@ export function WeatherRadarLayer({
     return () => {
       map.off("style.load", onStyleLoad);
     };
-  }, [map, isLoaded]);
+  }, [map, isLoaded, opacity, visible]);
 
   return null;
 }

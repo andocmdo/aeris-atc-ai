@@ -90,14 +90,11 @@ function reflectEndpoint(
 
   // Clamp reflection distance to 1° (~111km) to prevent the virtual
   // control point from swinging the spline too far on sparse paths.
+  // Only scale lat/lng — altitude (meters) is independent of geographic clamping.
   const MAX_REFLECT_DEG = 1.0;
   const scale = dist > MAX_REFLECT_DEG ? MAX_REFLECT_DEG / dist : 1.0;
 
-  return [
-    anchor[0] + dx * scale,
-    anchor[1] + dy * scale,
-    anchor[2] + dz * scale,
-  ];
+  return [anchor[0] + dx * scale, anchor[1] + dy * scale, anchor[2] + dz];
 }
 
 /**
@@ -284,17 +281,24 @@ function catmullRomSplineCore(
 
     const maxDelta = Math.max(Math.abs(deltaIn), Math.abs(deltaOut));
 
-    const STRAIGHT_THRESHOLD = (5 * Math.PI) / 180;
-    const CURVE_THRESHOLD = (20 * Math.PI) / 180;
+    const STRAIGHT_THRESHOLD = (3 * Math.PI) / 180;
+    const CURVE_THRESHOLD = (12 * Math.PI) / 180;
+    const MAX_TENSION = 0.85;
+    // Quadratic ease-out: moderate turns get full spline curvature faster
+    // while truly straight segments still get enough linear stability.
+    const tNorm =
+      maxDelta <= STRAIGHT_THRESHOLD
+        ? 0.0
+        : maxDelta >= CURVE_THRESHOLD
+          ? 1.0
+          : (maxDelta - STRAIGHT_THRESHOLD) /
+            (CURVE_THRESHOLD - STRAIGHT_THRESHOLD);
     const tension =
       maxDelta <= STRAIGHT_THRESHOLD
-        ? 0.92
+        ? MAX_TENSION
         : maxDelta >= CURVE_THRESHOLD
           ? 0.0
-          : 0.92 *
-            (1.0 -
-              (maxDelta - STRAIGHT_THRESHOLD) /
-                (CURVE_THRESHOLD - STRAIGHT_THRESHOLD));
+          : MAX_TENSION * (1.0 - tNorm) * (1.0 - tNorm);
 
     result.push(P1);
 

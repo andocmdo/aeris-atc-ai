@@ -1,7 +1,9 @@
 import { type MapboxOverlay } from "@deck.gl/mapbox";
 import { type PickingInfo } from "@deck.gl/core";
 import type { FlightState } from "@/lib/opensky";
+import type { AltitudeDisplayMode } from "@/lib/altitude-display-mode";
 import type { TrailEntry } from "@/hooks/use-trail-history";
+import type { TrailEnvelope } from "@/lib/trails/types";
 import type { MutableRefObject } from "react";
 
 // ── Overlay type augmentation ──────────────────────────────────────────
@@ -30,7 +32,7 @@ export const TRACK_DAMPING = 0.18;
 export const MLAT_POSITION_ALPHA = 0.65;
 export const TRAIL_SMOOTHING_ITERATIONS = 3;
 export const AIRCRAFT_PX_PER_UNIT = 0.3;
-export const BASE_AIRCRAFT_SIZE = 22;
+export const BASE_AIRCRAFT_SIZE = 20;
 export const AIRCRAFT_MIN_PIXELS = 0.8;
 export const AIRCRAFT_MAX_PIXELS = 18;
 export const AIRCRAFT_PICK_RADIUS_PX = 14;
@@ -66,6 +68,7 @@ export type ElevatedPoint = [number, number, number];
 export type FlightLayerProps = {
   flights: FlightState[];
   trails: TrailEntry[];
+  selectedEnvelope?: TrailEnvelope | null;
   onClick: (info: PickingInfo<FlightState> | null) => void;
   selectedIcao24: string | null;
   showTrails: boolean;
@@ -73,6 +76,7 @@ export type FlightLayerProps = {
   trailDistance: number;
   showShadows: boolean;
   showAltitudeColors: boolean;
+  altitudeDisplayMode: AltitudeDisplayMode;
   globeMode?: boolean;
   fpvIcao24?: string | null;
   fpvPositionRef?: MutableRefObject<{

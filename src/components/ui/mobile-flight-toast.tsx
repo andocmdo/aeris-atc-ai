@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { useMemo, useState, useCallback, useRef } from "react";
 import Image from "next/image";
 import {
   ArrowUp,
@@ -15,11 +15,10 @@ import {
   Camera,
   ImageOff,
   Plane,
-  Shield,
-  AlertTriangle,
 } from "lucide-react";
 import { useAircraftPhotos } from "@/hooks/use-aircraft-photos";
-import type { FlightState } from "@/lib/opensky";
+import { useRouteInfo } from "@/hooks/use-route-info";
+import type { FlightState, FlightTrack } from "@/lib/opensky";
 import {
   metersToFeet,
   msToKnots,
@@ -29,15 +28,18 @@ import {
 import { lookupAirline, parseFlightNumber } from "@/lib/airlines";
 import { aircraftTypeHint } from "@/lib/aircraft";
 import { airlineLogoCandidates } from "@/lib/airline-logos";
+import { formatAirportCode } from "@/lib/route-lookup";
 import {
   loadedAirlineLogoUrls,
   trackAirlineLogoLoaded,
   markAirlineLogoFailed,
   wasAirlineLogoRecentlyFailed,
 } from "@/lib/logo-cache";
+import type { NormalizedPhoto } from "@/hooks/use-aircraft-photos";
 
 type MobileFlightToastProps = {
   flight: FlightState;
+  track?: FlightTrack | null;
   onClose: () => void;
   onToggleFpv?: (icao24: string) => void;
   isFpvActive?: boolean;
@@ -71,8 +73,150 @@ function isEmergencyStatus(status?: string | null): boolean {
   return !!status && status !== "none";
 }
 
+type PhotoCarouselHeroProps = {
+  photos: NormalizedPhoto[];
+  loading: boolean;
+};
+
+function PhotoCarouselHero({ photos, loading }: PhotoCarouselHeroProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [activeSlide, setActiveSlide] = useState(0);
+  const [slideLoadState, setSlideLoadState] = useState<
+    Record<number, "loaded" | "error">
+  >({});
+  const [mountedSlides, setMountedSlides] = useState<Set<number>>(
+    () => new Set([0]),
+  );
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || el.clientWidth === 0 || photos.length === 0) return;
+
+    const idx = Math.max(
+      0,
+      Math.min(photos.length - 1, Math.round(el.scrollLeft / el.clientWidth)),
+    );
+
+    setActiveSlide(idx);
+    setMountedSlides((prev) => {
+      if (prev.has(idx)) return prev;
+      const next = new Set(prev);
+      next.add(idx);
+      return next;
+    });
+  }, [photos.length]);
+
+  const handleSlideLoad = useCallback((index: number) => {
+    setSlideLoadState((current) => ({ ...current, [index]: "loaded" }));
+  }, []);
+
+  const handleSlideError = useCallback((index: number) => {
+    setSlideLoadState((current) => ({ ...current, [index]: "error" }));
+  }, []);
+
+  const hasPhotos = photos.length > 0;
+  const showPhotos = !loading && hasPhotos;
+
+  return (
+    <div className="relative h-36 w-full overflow-hidden bg-foreground/5">
+      {loading && !hasPhotos && (
+        <span
+          aria-hidden
+          className="absolute inset-0 animate-pulse bg-linear-to-br from-foreground/5 via-foreground/8 to-foreground/5"
+        />
+      )}
+
+      {!loading && !hasPhotos && (
+        <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-foreground/15">
+          <ImageOff className="h-4 w-4" />
+          <span className="text-[9px] font-medium">No photo</span>
+        </div>
+      )}
+
+      {showPhotos && (
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="flex h-full snap-x snap-mandatory overflow-x-auto scrollbar-none"
+          style={{ scrollSnapType: "x mandatory", scrollbarWidth: "none" }}
+        >
+          {photos.map((photo, i) => (
+            <div
+              key={photo.id}
+              className="relative h-full w-full shrink-0 snap-center"
+            >
+              {slideLoadState[i] !== "loaded" &&
+                slideLoadState[i] !== "error" && (
+                  <span
+                    aria-hidden
+                    className="absolute inset-0 animate-pulse bg-linear-to-br from-foreground/5 via-foreground/8 to-foreground/5"
+                  />
+                )}
+              {slideLoadState[i] === "error" ? (
+                <div className="flex h-full w-full items-center justify-center text-foreground/15">
+                  <ImageOff className="h-5 w-5" />
+                </div>
+              ) : mountedSlides.has(i) ? (
+                <Image
+                  src={photo.url}
+                  alt={`Aircraft photo ${i + 1}`}
+                  fill
+                  sizes="100vw"
+                  unoptimized
+                  onLoad={() => handleSlideLoad(i)}
+                  onError={() => handleSlideError(i)}
+                  className={`object-cover transition-opacity duration-300 ${
+                    slideLoadState[i] === "loaded" ? "opacity-100" : "opacity-0"
+                  }`}
+                  draggable={false}
+                />
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showPhotos && (
+        <span className="pointer-events-none absolute inset-0 bg-linear-to-t from-black/40 via-black/5 to-transparent" />
+      )}
+
+      {showPhotos && photos[activeSlide]?.photographer && (
+        <span className="absolute bottom-1.5 right-2 z-10 flex items-center gap-0.5 rounded-full bg-background/45 px-1.5 py-0.5 text-[8px] font-medium text-foreground/55 backdrop-blur-sm">
+          <Camera className="h-2 w-2" />
+          {photos[activeSlide].photographer}
+        </span>
+      )}
+
+      {showPhotos && photos.length > 1 && (
+        <div className="absolute bottom-1.5 left-1/2 z-10 flex -translate-x-1/2 gap-1">
+          {photos.slice(0, 10).map((_, i) => (
+            <span
+              key={i}
+              className={`h-1 w-1 rounded-full transition-colors duration-200 ${
+                i === activeSlide ? "bg-foreground/80" : "bg-foreground/30"
+              }`}
+            />
+          ))}
+          {photos.length > 10 && (
+            <span className="text-[7px] leading-none text-foreground/30">
+              +{photos.length - 10}
+            </span>
+          )}
+        </div>
+      )}
+
+      {showPhotos && photos.length > 1 && (
+        <span className="absolute top-1.5 right-2 z-10 rounded-full bg-background/45 px-1.5 py-0.5 text-[8px] font-semibold tabular-nums text-foreground/60 backdrop-blur-sm">
+          {activeSlide + 1}/{photos.length}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function MobileFlightToast({
   flight,
+  track,
   onClose,
   onToggleFpv,
   isFpvActive = false,
@@ -86,7 +230,9 @@ export function MobileFlightToast({
   const canEnterFpv =
     flight.longitude != null && flight.latitude != null && !flight.onGround;
 
-  // â”€â”€ Airline logo with fallback chain â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const routeInfo = useRouteInfo(flight, track);
+
+  // Airline logo fallback chain.
   const logoCandidates = airlineLogoCandidates(airline, flight.callsign);
   const [logoIndexByAirline, setLogoIndexByAirline] = useState<
     Record<string, number>
@@ -117,165 +263,21 @@ export function MobileFlightToast({
   const showLogo = Boolean(logoUrl);
   const genericLogoUrl = "/airline-logos/envoy-air.png";
 
-  // â”€â”€ Aircraft photos & details â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Aircraft photos and details.
   const {
     photos,
     aircraft: aircraftDetails,
     loading: photosLoading,
   } = useAircraftPhotos(flight.icao24, flight.registration);
-
-  // â”€â”€ Photo carousel state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [activeSlide, setActiveSlide] = useState(0);
-  const [slideLoadState, setSlideLoadState] = useState<
-    Record<number, "loaded" | "error">
-  >({});
-  // Progressive loading: only mount <img> for slides the user has reached
-  const [mountedSlides, setMountedSlides] = useState<Set<number>>(
-    () => new Set([0]),
-  );
-
-  // Reset carousel when photos change (new aircraft)
   const photoKey = photos.map((p) => p.id).join(",");
-  useEffect(() => {
-    setActiveSlide(0);
-    setSlideLoadState({});
-    setMountedSlides(new Set([0]));
-    if (scrollRef.current) scrollRef.current.scrollLeft = 0;
-  }, [photoKey]);
-
-  // When the active slide changes, mount that slide's image
-  useEffect(() => {
-    setMountedSlides((prev) => {
-      if (prev.has(activeSlide)) return prev;
-      const next = new Set(prev);
-      next.add(activeSlide);
-      return next;
-    });
-  }, [activeSlide]);
-
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el || el.clientWidth === 0) return;
-    const idx = Math.round(el.scrollLeft / el.clientWidth);
-    setActiveSlide(idx);
-  }, []);
-
-  const handleSlideLoad = useCallback((index: number) => {
-    setSlideLoadState((s) => ({ ...s, [index]: "loaded" }));
-  }, []);
-
-  const handleSlideError = useCallback((index: number) => {
-    setSlideLoadState((s) => ({ ...s, [index]: "error" }));
-  }, []);
-
-  const hasPhotos = photos.length > 0;
-  const showPhotos = !photosLoading && hasPhotos;
 
   return (
     <div className="w-full overflow-hidden rounded-2xl border border-foreground/8 bg-background/80 shadow-2xl shadow-background/50 backdrop-blur-2xl">
-      {/* Photo carousel / hero banner */}
-      <div className="relative h-36 w-full overflow-hidden bg-foreground/5">
-        {/* Skeleton while loading */}
-        {photosLoading && !hasPhotos && (
-          <span
-            aria-hidden
-            className="absolute inset-0 animate-pulse bg-linear-to-br from-foreground/5 via-foreground/8 to-foreground/5"
-          />
-        )}
-
-        {/* No image placeholder */}
-        {!photosLoading && !hasPhotos && (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-foreground/15">
-            <ImageOff className="h-4 w-4" />
-            <span className="text-[9px] font-medium">No photo</span>
-          </div>
-        )}
-
-        {/* Swipeable photo slider */}
-        {showPhotos && (
-          <div
-            ref={scrollRef}
-            onScroll={handleScroll}
-            className="flex h-full snap-x snap-mandatory overflow-x-auto scrollbar-none"
-            style={{ scrollSnapType: "x mandatory", scrollbarWidth: "none" }}
-          >
-            {photos.map((photo, i) => (
-              <div
-                key={photo.id}
-                className="relative h-full w-full shrink-0 snap-center"
-              >
-                {/* Show skeleton until this slide's image is loaded */}
-                {slideLoadState[i] !== "loaded" &&
-                  slideLoadState[i] !== "error" && (
-                    <span
-                      aria-hidden
-                      className="absolute inset-0 animate-pulse bg-linear-to-br from-foreground/5 via-foreground/8 to-foreground/5"
-                    />
-                  )}
-                {slideLoadState[i] === "error" ? (
-                  <div className="flex h-full w-full items-center justify-center text-foreground/15">
-                    <ImageOff className="h-5 w-5" />
-                  </div>
-                ) : mountedSlides.has(i) ? (
-                  <img
-                    src={photo.url}
-                    alt={`Aircraft photo ${i + 1}`}
-                    decoding="async"
-                    onLoad={() => handleSlideLoad(i)}
-                    onError={() => handleSlideError(i)}
-                    className={`h-full w-full object-cover transition-opacity duration-300 ${
-                      slideLoadState[i] === "loaded"
-                        ? "opacity-100"
-                        : "opacity-0"
-                    }`}
-                    draggable={false}
-                  />
-                ) : null}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Gradient overlay */}
-        {showPhotos && (
-          <span className="pointer-events-none absolute inset-0 bg-linear-to-t from-black/40 via-black/5 to-transparent" />
-        )}
-
-        {/* Photographer attribution */}
-        {showPhotos && photos[activeSlide]?.photographer && (
-          <span className="absolute bottom-1.5 right-2 z-10 flex items-center gap-0.5 rounded-full bg-background/45 px-1.5 py-0.5 text-[8px] font-medium text-foreground/55 backdrop-blur-sm">
-            <Camera className="h-2 w-2" />
-            {photos[activeSlide].photographer}
-          </span>
-        )}
-
-        {/* Dot indicators */}
-        {showPhotos && photos.length > 1 && (
-          <div className="absolute bottom-1.5 left-1/2 z-10 flex -translate-x-1/2 gap-1">
-            {photos.slice(0, 10).map((_, i) => (
-              <span
-                key={i}
-                className={`h-1 w-1 rounded-full transition-colors duration-200 ${
-                  i === activeSlide ? "bg-foreground/80" : "bg-foreground/30"
-                }`}
-              />
-            ))}
-            {photos.length > 10 && (
-              <span className="text-[7px] leading-none text-foreground/30">
-                +{photos.length - 10}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Slide counter */}
-        {showPhotos && photos.length > 1 && (
-          <span className="absolute top-1.5 right-2 z-10 rounded-full bg-background/45 px-1.5 py-0.5 text-[8px] font-semibold tabular-nums text-foreground/60 backdrop-blur-sm">
-            {activeSlide + 1}/{photos.length}
-          </span>
-        )}
-      </div>
+      <PhotoCarouselHero
+        key={photoKey}
+        photos={photos}
+        loading={photosLoading}
+      />
 
       <div className="p-3.5 pt-3">
         {/* Header row: logo + callsign + close */}
@@ -326,7 +328,7 @@ export function MobileFlightToast({
               <span className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-foreground/10 bg-white/95 p-2 shadow-sm">
                 {genericLogoFailed ? (
                   <span className="text-[16px] font-semibold text-background/25">
-                    â€”
+                    —
                   </span>
                 ) : (
                   <Image
@@ -350,7 +352,7 @@ export function MobileFlightToast({
             </p>
             <p className="mt-0.5 truncate text-[10px] font-medium tracking-widest text-foreground/30 uppercase">
               {flight.icao24}
-              {flightNum ? ` Â· #${flightNum}` : ""}
+              {flightNum ? ` · #${flightNum}` : ""}
             </p>
           </div>
 
@@ -371,7 +373,7 @@ export function MobileFlightToast({
             <p className="truncate text-[11px] font-medium text-foreground/45">
               {company}
               {model ? (
-                <span className="text-foreground/25"> Â· {model}</span>
+                <span className="text-foreground/25"> · {model}</span>
               ) : null}
             </p>
           </div>
@@ -391,24 +393,37 @@ export function MobileFlightToast({
                   aircraftDetails.owner,
                 ]
                   .filter(Boolean)
-                  .join(" Â· ")}
+                  .join(" · ")}
               </p>
             </div>
           )}
-        {/* Military / Emergency badges */}
+        {/* Route info */}
+        {(routeInfo.origin || routeInfo.destination) && (
+          <div className="mt-2 flex items-center gap-1.5">
+            <Navigation className="h-3 w-3 shrink-0 text-foreground/20" />
+            <p className="truncate text-[11px] font-semibold text-foreground/50">
+              {routeInfo.origin ? formatAirportCode(routeInfo.origin) : "—"}
+              <span className="mx-1 text-foreground/20">→</span>
+              {routeInfo.destination
+                ? formatAirportCode(routeInfo.destination)
+                : "—"}
+            </p>
+          </div>
+        )}
+        {/* Military / Emergency indicators */}
         {(isMilitary(flight.dbFlags) ||
           isEmergencyStatus(flight.emergencyStatus)) && (
-          <div className="mt-2 flex items-center gap-1.5 px-0">
+          <div className="mt-2 flex items-center gap-3">
             {isMilitary(flight.dbFlags) && (
-              <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-amber-400 uppercase ring-1 ring-amber-400/20">
-                <Shield className="h-2.5 w-2.5" />
-                MIL
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-medium tracking-wide text-amber-400/70">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-400/60" />
+                Military
               </span>
             )}
             {isEmergencyStatus(flight.emergencyStatus) && (
-              <span className="inline-flex animate-pulse items-center gap-1 rounded bg-red-500/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-red-400 uppercase ring-1 ring-red-400/25">
-                <AlertTriangle className="h-2.5 w-2.5" />
-                {flight.emergencyStatus?.toUpperCase()}
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-medium tracking-wide text-red-400/80">
+                <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
+                {flight.emergencyStatus}
               </span>
             )}
           </div>
@@ -432,8 +447,8 @@ export function MobileFlightToast({
           label="HDG"
           value={
             heading !== null && Number.isFinite(heading)
-              ? `${Math.round(heading)}Â° ${cardinal}`
-              : "â€”"
+              ? `${Math.round(heading)}° ${cardinal}`
+              : "—"
           }
         />
         <MiniMetric
@@ -442,7 +457,7 @@ export function MobileFlightToast({
           value={
             flight.verticalRate !== null && Number.isFinite(flight.verticalRate)
               ? `${flight.verticalRate > 0 ? "+" : ""}${Math.round(flight.verticalRate)}`
-              : "â€”"
+              : "—"
           }
         />
       </div>
@@ -477,9 +492,9 @@ export function MobileFlightToast({
                 Number.isFinite(flight.longitude) && (
                   <span className="text-foreground/20">
                     {" "}
-                    Â· {Math.abs(flight.latitude).toFixed(2)}Â°
+                    · {Math.abs(flight.latitude).toFixed(2)}°
                     {flight.latitude >= 0 ? "N" : "S"},{" "}
-                    {Math.abs(flight.longitude).toFixed(2)}Â°
+                    {Math.abs(flight.longitude).toFixed(2)}°
                     {flight.longitude >= 0 ? "E" : "W"}
                   </span>
                 )}
@@ -508,7 +523,7 @@ export function MobileFlightToast({
             >
               {flight.squawk}
               {isEmergencySquawk(flight.squawk) && (
-                <span className="ml-1.5 rounded bg-red-500/15 px-1.5 py-0.5 text-[9px] font-semibold tracking-wider text-red-400 uppercase">
+                <span className="ml-1.5 text-[9px] font-medium tracking-wide text-red-400/80">
                   {squawkLabel(flight.squawk)}
                 </span>
               )}

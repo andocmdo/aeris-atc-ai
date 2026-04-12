@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 
+import type { AltitudeDisplayMode } from "@/lib/altitude-display-mode";
 import { clamp } from "@/lib/utils";
 
 export type OrbitDirection = "clockwise" | "counter-clockwise";
@@ -24,6 +25,7 @@ export type Settings = {
   trailDistance: number;
   showShadows: boolean;
   showAltitudeColors: boolean;
+  altitudeDisplayMode: AltitudeDisplayMode;
   fpvChaseDistance: number;
   globeMode: boolean;
   showAirspace: boolean;
@@ -37,7 +39,7 @@ export type Settings = {
 const TRAIL_THICKNESS_MIN = 0.5;
 const TRAIL_THICKNESS_MAX = 8;
 const TRAIL_DISTANCE_MIN = 12;
-const TRAIL_DISTANCE_MAX = 100;
+const TRAIL_DISTANCE_MAX = 120;
 const FPV_CHASE_DISTANCE_MIN = 0.003;
 const FPV_CHASE_DISTANCE_MAX = 0.01;
 export const AIRSPACE_OPACITY_MIN = 0.25;
@@ -81,9 +83,10 @@ const DEFAULT_SETTINGS: Settings = {
   orbitDirection: "clockwise",
   showTrails: true,
   trailThickness: 1.3,
-  trailDistance: 40,
+  trailDistance: 80,
   showShadows: true,
   showAltitudeColors: true,
+  altitudeDisplayMode: "presentation",
   fpvChaseDistance: 0.0048,
   globeMode: false,
   showAirspace: false,
@@ -95,7 +98,7 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 const STORAGE_KEY = "aeris:settings";
-const STORAGE_VERSION = 1;
+const STORAGE_VERSION = 2;
 const WRITE_DEBOUNCE_MS = 300;
 
 type StorageEnvelope = {
@@ -122,6 +125,8 @@ function isValidSettings(obj: unknown): obj is Settings {
     s.trailDistance <= TRAIL_DISTANCE_MAX &&
     typeof s.showShadows === "boolean" &&
     typeof s.showAltitudeColors === "boolean" &&
+    (s.altitudeDisplayMode === "presentation" ||
+      s.altitudeDisplayMode === "realistic") &&
     typeof s.fpvChaseDistance === "number" &&
     Number.isFinite(s.fpvChaseDistance) &&
     s.fpvChaseDistance >= FPV_CHASE_DISTANCE_MIN &&

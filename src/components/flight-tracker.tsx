@@ -41,9 +41,7 @@ import { Brand, GitHubBadge } from "@/components/flight-tracker-brand";
 import { SettingsProvider, useSettings } from "@/hooks/use-settings";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useFlights } from "@/hooks/use-flights";
-import { useTrailHistory } from "@/hooks/use-trail-history";
-import { useFlightTrack } from "@/hooks/use-flight-track";
-import { useMergedTrails } from "@/hooks/use-merged-trails";
+import { useTrailSystem } from "@/hooks/use-trail-system";
 import { useFlightMonitors } from "@/hooks/use-flight-monitors";
 import { useAtcStream } from "@/hooks/use-atc-stream";
 import { useIsMobile } from "@/hooks/use-is-mobile";
@@ -55,6 +53,7 @@ import type { FlightState } from "@/lib/opensky";
 
 import { fetchFlightByHex, fetchFlightByCallsign } from "@/lib/flight-api";
 import { formatCallsign } from "@/lib/flight-utils";
+import { processDepartures } from "@/lib/route-detection";
 import type { PickingInfo } from "@deck.gl/core";
 import {
   DEFAULT_CITY,
@@ -109,6 +108,9 @@ function FlightTrackerInner() {
   } | null>(null);
 
   const lookupAbortRef = useRef<AbortController | null>(null);
+  const [selectedAirportIata, setSelectedAirportIata] = useState<string | null>(
+    null,
+  );
 
   const activeCity = cityOverride ?? hydratedCity;
   const mapStyle = styleOverride ?? hydratedStyle;
@@ -150,7 +152,18 @@ function FlightTrackerInner() {
   );
 
   const displayFlights = flights;
-  const displayTrails = useTrailHistory(displayFlights);
+  const trailState = useTrailSystem({
+    flights: displayFlights,
+    selectedIcao24,
+    historyEnabled: !!selectedIcao24 && !fpvIcao24,
+  });
+  const mergedTrails = trailState.trails;
+  const selectedTrack = trailState.selectedTrack;
+
+  // Feed flights into departure detection for route estimation
+  useEffect(() => {
+    if (displayFlights.length > 0) processDepartures(displayFlights);
+  }, [displayFlights]);
 
   // Single Map for O(1) flight lookups — replaces 4× O(n) find() calls per poll
   const displayFlightMap = useMemo(() => {
@@ -158,21 +171,6 @@ function FlightTrackerInner() {
     for (const f of displayFlights) m.set(f.icao24, f);
     return m;
   }, [displayFlights]);
-
-  const shouldFetchSelectedTrack = !!selectedIcao24 && !fpvIcao24;
-
-  const { track: selectedTrack, fetchedAtMs: selectedTrackFetchedAtMs } =
-    useFlightTrack(selectedIcao24, {
-      enabled: shouldFetchSelectedTrack,
-    });
-
-  const mergedTrails = useMergedTrails(
-    selectedIcao24,
-    selectedTrack,
-    selectedTrackFetchedAtMs,
-    displayTrails,
-    displayFlights,
-  );
 
   const selectedFlight = useMemo(() => {
     if (!selectedIcao24) return null;
@@ -230,9 +228,6 @@ function FlightTrackerInner() {
     zoom: 9.2,
     center: { lat: 0, lng: 0 },
   });
-  const [selectedAirportIata, setSelectedAirportIata] = useState<string | null>(
-    null,
-  );
 
   const handleMapStateChange = useCallback((state: MapViewState) => {
     setMapViewState(state);
@@ -465,6 +460,7 @@ function FlightTrackerInner() {
         <FlightLayers
           flights={displayFlights}
           trails={mergedTrails}
+          selectedEnvelope={trailState.selectedEnvelope}
           onClick={handleClick}
           selectedIcao24={fpvIcao24 ?? selectedIcao24}
           showTrails={settings.showTrails}
@@ -472,6 +468,7 @@ function FlightTrackerInner() {
           trailDistance={settings.trailDistance}
           showShadows={settings.showShadows}
           showAltitudeColors={settings.showAltitudeColors}
+          altitudeDisplayMode={settings.altitudeDisplayMode}
           globeMode={settings.globeMode}
           fpvIcao24={fpvIcao24}
           fpvPositionRef={fpvPositionRef}
@@ -490,6 +487,7 @@ function FlightTrackerInner() {
             <FlightCard
               flight={displayFlight}
               trail={selectedTrail}
+              track={selectedTrack}
               onClose={handleDeselectFlight}
               onToggleFpv={handleToggleFpv}
               isFpvActive={
@@ -568,6 +566,7 @@ function FlightTrackerInner() {
             {airportBoard.isActive && (
               <div className="pointer-events-auto absolute bottom-[env(safe-area-inset-bottom,0px)] left-1/2 mb-14 -translate-x-1/2 sm:mb-16">
                 <AirportBoard
+                  key={airportBoard.airport?.iata ?? "airport-board"}
                   data={airportBoard}
                   onSelectFlight={handleAirportBoardSelect}
                   selectedIcao24={selectedIcao24}
@@ -604,6 +603,7 @@ function FlightTrackerInner() {
             >
               <MobileFlightToast
                 flight={displayFlight}
+                track={selectedTrack}
                 onClose={handleDeselectFlight}
                 onToggleFpv={handleToggleFpv}
                 isFpvActive={fpvIcao24 === displayFlight.icao24}
