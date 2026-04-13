@@ -4,7 +4,7 @@ Real-time 3D flight tracking — altitude-aware, visually stunning.
 
 Aeris renders live air traffic over the world's busiest airspaces on a premium dark-mode map. Flights are separated by altitude in true 3D: low altitudes glow cyan, high altitudes shift to gold. Select a city, and the camera glides to that airspace with spring-eased animation.
 
-[Live Demo](https://aeris.edbn.me)
+[Live Demo](https://aeris.edbn.me) | [HN discussion](https://news.ycombinator.com/item?id=47048004)
 
 <img width="1280" height="832" alt="aeris - 1" src="https://github.com/user-attachments/assets/3fe48868-f8cd-48af-81d6-395c1fce8a2a" />
 
