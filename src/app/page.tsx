@@ -1,4 +1,5 @@
 import { FlightTracker } from "@/components/flight-tracker";
+import { isAirspaceConfigured } from "@/lib/airspace-config";
 
 const siteUrl = "https://aeris.edbn.me";
 
@@ -80,6 +81,8 @@ const jsonLd = [
 ];
 
 export default function Home() {
+  const airspaceAvailable = isAirspaceConfigured();
+
   return (
     <>
       <script
@@ -88,7 +91,7 @@ export default function Home() {
           __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c"),
         }}
       />
-      <FlightTracker />
+      <FlightTracker airspaceAvailable={airspaceAvailable} />
     </>
   );
 }

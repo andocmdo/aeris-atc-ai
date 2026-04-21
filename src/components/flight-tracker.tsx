@@ -82,7 +82,11 @@ import {
   cityFromFlight,
 } from "@/components/flight-tracker-random";
 
-function FlightTrackerInner() {
+type FlightTrackerProps = {
+  airspaceAvailable?: boolean;
+};
+
+function FlightTrackerInner({ airspaceAvailable = true }: FlightTrackerProps) {
   // useSyncExternalStore with a no-op subscriber reads localStorage once
   // on the client while returning DEFAULT_CITY on the server — SSR-safe
   // hydration without useEffect flicker.
@@ -129,6 +133,7 @@ function FlightTrackerInner() {
   const mapStyle = styleOverride ?? hydratedStyle;
   const { settings, update } = useSettings();
   const { setTheme } = useTheme();
+  const showAirspace = airspaceAvailable && settings.showAirspace;
 
   // Sync document theme with current map style (dark/light)
   useEffect(() => {
@@ -536,11 +541,13 @@ function FlightTrackerInner() {
           isDark={mapStyle.dark}
         />
         <UserLocationMarker coordinates={userLocation} />
-        <AirspaceLayer
-          visible={settings.showAirspace}
-          opacity={settings.airspaceOpacity}
-          bounds={airspaceBounds}
-        />
+        {airspaceAvailable && (
+          <AirspaceLayer
+            visible={showAirspace}
+            opacity={settings.airspaceOpacity}
+            bounds={airspaceBounds}
+          />
+        )}
         <WeatherRadarLayer
           visible={settings.showWeatherRadar}
           opacity={settings.weatherRadarOpacity}
@@ -618,6 +625,7 @@ function FlightTrackerInner() {
           <div className="pointer-events-auto absolute right-3 top-3 flex items-center gap-1.5 sm:right-4 sm:top-4 sm:gap-2">
             <GitHubBadge stars={repoStars} />
             <ControlPanel
+              airspaceAvailable={airspaceAvailable}
               activeCity={activeCity}
               onSelectCity={setActiveCity}
               activeStyle={mapStyle}
@@ -671,7 +679,7 @@ function FlightTrackerInner() {
             <div className="pointer-events-auto">
               <MapAttribution
                 styleId={mapStyle.id}
-                showAirspace={settings.showAirspace}
+                showAirspace={showAirspace}
               />
             </div>
           </div>
@@ -737,11 +745,13 @@ function FlightTrackerInner() {
   );
 }
 
-export function FlightTracker() {
+export function FlightTracker({
+  airspaceAvailable = true,
+}: FlightTrackerProps) {
   return (
     <ErrorBoundary>
       <SettingsProvider>
-        <FlightTrackerInner />
+        <FlightTrackerInner airspaceAvailable={airspaceAvailable} />
       </SettingsProvider>
     </ErrorBoundary>
   );

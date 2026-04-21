@@ -61,8 +61,13 @@ const UNIT_SYSTEMS: { label: string; value: UnitSystem }[] = [
   { label: "Imperial", value: "imperial" },
 ];
 
-export function SettingsContent() {
+export function SettingsContent({
+  airspaceAvailable = true,
+}: {
+  airspaceAvailable?: boolean;
+}) {
   const { settings, update, reset } = useSettings();
+  const showAirspace = airspaceAvailable && settings.showAirspace;
 
   return (
     <ScrollArea className="h-full">
@@ -155,12 +160,18 @@ export function SettingsContent() {
         <SettingRow
           icon={<Shield className="h-4 w-4" />}
           title="Airspace overlay"
-          description="Show classified airspace boundaries (OpenAIP)"
-          checked={settings.showAirspace}
+          description={
+            airspaceAvailable
+              ? "Show classified airspace boundaries (OpenAIP)"
+              : "Unavailable on this deployment until OPENAIP_API_KEY is configured"
+          }
+          checked={showAirspace}
           onChange={(v) => update("showAirspace", v)}
+          disabled={!airspaceAvailable}
+          badge={airspaceAvailable ? undefined : "SETUP"}
         />
 
-        {settings.showAirspace && (
+        {showAirspace && (
           <AirspaceOpacitySlider
             value={settings.airspaceOpacity}
             onChange={(v) => update("airspaceOpacity", v)}
@@ -463,6 +474,7 @@ function SettingRow({
   description,
   checked,
   onChange,
+  disabled = false,
   badge,
 }: {
   icon: ReactNode;
@@ -470,14 +482,23 @@ function SettingRow({
   description: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
   badge?: string;
 }) {
   return (
     <button
       role="switch"
       aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className="flex w-full items-center gap-3.5 rounded-xl px-3 py-3 text-left transition-colors hover:bg-foreground/4 active:bg-foreground/6"
+      aria-disabled={disabled}
+      disabled={disabled}
+      onClick={() => {
+        if (!disabled) onChange(!checked);
+      }}
+      className={`flex w-full items-center gap-3.5 rounded-xl px-3 py-3 text-left transition-colors ${
+        disabled
+          ? "cursor-not-allowed opacity-60"
+          : "hover:bg-foreground/4 active:bg-foreground/6"
+      }`}
     >
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-foreground/5 text-foreground/35 ring-1 ring-foreground/6">
         {icon}

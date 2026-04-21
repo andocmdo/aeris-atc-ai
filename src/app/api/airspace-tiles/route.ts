@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  AIRSPACE_DISABLED_HEADER,
+  AIRSPACE_DISABLED_REASON,
+  getOpenAipApiKey,
+} from "@/lib/airspace-config";
 
 // ── OpenAIP Airspace MVT Proxy ──────────────────────────────────────
 //
@@ -17,8 +22,6 @@ import { NextRequest, NextResponse } from "next/server";
 // Docs: https://docs.openaip.net/?urls.primaryName=Tiles%20API
 // License: CC BY-NC 4.0 — attribution required.
 // ────────────────────────────────────────────────────────────────────
-
-const OPENAIP_API_KEY = process.env.OPENAIP_API_KEY ?? "";
 
 const SUBDOMAINS = ["a", "b", "c"] as const;
 
@@ -93,6 +96,7 @@ async function fetchUpstream(
   z: string,
   x: string,
   y: string,
+  apiKey: string,
 ): Promise<CachedTile | null> {
   await acquireSlot();
   try {
@@ -109,7 +113,7 @@ async function fetchUpstream(
         const res = await fetch(url, {
           signal: controller.signal,
           headers: {
-            "x-openaip-api-key": OPENAIP_API_KEY,
+            "x-openaip-api-key": apiKey,
             Accept: "application/x-protobuf",
           },
         });
@@ -151,10 +155,14 @@ async function fetchUpstream(
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
-  if (!OPENAIP_API_KEY) {
+  const apiKey = getOpenAipApiKey();
+  if (!apiKey) {
     return new NextResponse(null, {
-      status: 503,
-      headers: { "Cache-Control": "no-store" },
+      status: 204,
+      headers: {
+        "Cache-Control": "no-store",
+        [AIRSPACE_DISABLED_HEADER]: AIRSPACE_DISABLED_REASON,
+      },
     });
   }
 
@@ -220,7 +228,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   let promise = inflight.get(key);
   if (!promise) {
-    promise = fetchUpstream(key, z, x, y).finally(() => {
+    promise = fetchUpstream(key, z, x, y, apiKey).finally(() => {
       inflight.delete(key);
     });
     inflight.set(key, promise);

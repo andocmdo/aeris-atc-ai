@@ -59,6 +59,7 @@ const PANEL_TABS = [
 const subscribePortalMount = () => () => {};
 
 type ControlPanelProps = {
+  airspaceAvailable?: boolean;
   activeCity: City;
   onSelectCity: (city: City) => void;
   activeStyle: MapStyle;
@@ -69,6 +70,7 @@ type ControlPanelProps = {
 };
 
 export function ControlPanel({
+  airspaceAvailable = true,
   activeCity,
   onSelectCity,
   activeStyle,
@@ -147,6 +149,7 @@ export function ControlPanel({
                 activeTab={openTab}
                 onTabChange={setOpenTab}
                 onClose={close}
+                airspaceAvailable={airspaceAvailable}
                 activeCity={activeCity}
                 onSelectCity={(c) => {
                   onSelectCity(c);
@@ -170,6 +173,7 @@ function PanelDialog({
   activeTab,
   onTabChange,
   onClose,
+  airspaceAvailable,
   activeCity,
   onSelectCity,
   activeStyle,
@@ -181,6 +185,7 @@ function PanelDialog({
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
   onClose: () => void;
+  airspaceAvailable: boolean;
   activeCity: City;
   onSelectCity: (city: City) => void;
   activeStyle: MapStyle;
@@ -380,7 +385,7 @@ function PanelDialog({
                 )}
                 {activeTab === "settings" && (
                   <TabContent key="settings">
-                    <SettingsContent />
+                    <SettingsContent airspaceAvailable={airspaceAvailable} />
                   </TabContent>
                 )}
                 {activeTab === "shortcuts" && (
