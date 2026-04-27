@@ -221,7 +221,7 @@ def build_response(center_lat: float, center_lng: float, _radius_nm: float) -> d
 
 # Matches /v2/point/{lat}/{lon}/{radius}
 _POINT_RE = re.compile(
-    r"^/v2/point/(-?\d+(?:\.\d+)?)/(-?\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)"
+    r"^/(?:v2/)?point/(-?\d+(?:\.\d+)?)/(-?\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)"
 )
 
 
