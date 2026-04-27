@@ -16,7 +16,7 @@ import {
 
 // ── Types ──────────────────────────────────────────────────────────────
 
-export type ProviderName = "airplanes" | "adsb" | "opensky" | "auto";
+export type ProviderName = "airplanes" | "adsb" | "opensky" | "simulation" | "auto";
 
 export interface FlightApiFetchResult {
   flights: FlightState[];
@@ -138,7 +138,7 @@ export function getProviderOverride(): ProviderName {
   const p = new URLSearchParams(window.location.search)
     .get("provider")
     ?.toLowerCase();
-  if (p === "airplanes" || p === "adsb" || p === "opensky") return p;
+  if (p === "airplanes" || p === "adsb" || p === "opensky" || p === "simulation") return p;
   return "auto";
 }
 
@@ -201,7 +201,7 @@ function validateReadsb(payload: unknown): ReadsbApiResponse {
 
 async function fetchViaProxy(
   path: string,
-  provider: "adsb" | "airplanes" = "adsb",
+  provider: "adsb" | "airplanes" | "simulation" = "adsb",
   signal?: AbortSignal,
 ): Promise<ReadsbApiResponse> {
   return withTimeout(
@@ -368,6 +368,16 @@ export async function fetchFlightsByPoint(
     tiers.push({
       id: "opensky",
       fn: () => fetchFromOpenSkyPoint(cLat, cLon, radiusDeg, signal),
+    });
+  }
+
+  if (override === "simulation") {
+    tiers.push({
+      id: "simulation",
+      fn: async () => {
+        const resp = await fetchViaProxy(readsbPath, "simulation", signal);
+        return parseAircraftList(resp.ac, options);
+      },
     });
   }
 

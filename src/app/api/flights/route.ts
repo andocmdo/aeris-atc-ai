@@ -17,7 +17,7 @@ import { READSB_FETCH_TIMEOUT_MS, MAX_RADIUS_NM } from "@/lib/flight-api-types";
 
 // ── Provider Configuration ─────────────────────────────────────────────
 
-type ProviderKey = "adsb" | "airplanes";
+type ProviderKey = "adsb" | "airplanes" | "simulation";
 
 interface ProviderConfig {
   baseUrl: string;
@@ -36,6 +36,11 @@ const PROVIDERS: Record<ProviderKey, ProviderConfig> = {
     baseUrl: "https://api.airplanes.live/v2",
     name: "airplanes.live",
     rateMs: 1_100, // 1 req/s documented limit + 100ms margin
+  },
+  simulation: {
+    baseUrl: process.env.SIMULATION_SERVER_URL ?? "http://localhost:8888",
+    name: "simulation",
+    rateMs: 0,
   },
 };
 
@@ -91,9 +96,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const providerRaw =
     request.nextUrl.searchParams.get("provider")?.toLowerCase() ?? "adsb";
 
-  if (providerRaw !== "adsb" && providerRaw !== "airplanes") {
+  if (providerRaw !== "adsb" && providerRaw !== "airplanes" && providerRaw !== "simulation") {
     return NextResponse.json(
-      { error: "Invalid provider. Use 'adsb' or 'airplanes'." },
+      { error: "Invalid provider. Use 'adsb', 'airplanes', or 'simulation'." },
       { status: 400, headers: { "Cache-Control": "no-store" } },
     );
   }
